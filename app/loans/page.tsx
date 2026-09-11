@@ -12,15 +12,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn, unwrapRelation } from "@/lib/utils";
+import { cn, unwrapRelation, type Relation } from "@/lib/utils";
 
 type EmbeddedBorrower = {
-  individual_profiles: any;
-  corporate_profiles: any;
-  other_profiles: any;
+  individual_profiles: Relation<{ full_name: string }>;
+  corporate_profiles: Relation<{ legal_name: string }>;
+  other_profiles: Relation<{ entity_name: string }>;
 };
 
-function displayName(borrowers: any) {
+function displayName(borrowers: Relation<EmbeddedBorrower>) {
   const borrower = unwrapRelation<EmbeddedBorrower>(borrowers);
   if (!borrower) return "—";
   const ind = unwrapRelation<{ full_name: string }>(borrower.individual_profiles);

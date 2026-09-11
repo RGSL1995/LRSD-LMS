@@ -55,7 +55,7 @@ function useEditToggle(action: typeof updateIndividualProfile) {
   return { editing, setEditing, state, formAction, pending };
 }
 
-type IndividualProfile = {
+export type IndividualProfile = {
   full_name: string;
   father_or_husband_name: string | null;
   date_of_birth: string | null;
@@ -101,6 +101,45 @@ export function IndividualProfileEditor({
   const { editing, setEditing, state, formAction, pending } =
     useEditToggle(updateIndividualProfile);
 
+  const [currentAddress, setCurrentAddress] = useState({
+    line: profile.current_address_line ?? "",
+    city: profile.current_city ?? "",
+    state: profile.current_state ?? "",
+    pincode: profile.current_pincode ?? "",
+    years: profile.current_residence_years ? String(profile.current_residence_years) : "",
+    type: profile.current_residence_type ?? "",
+  });
+
+  const [permanentAddress, setPermanentAddress] = useState({
+    line: profile.permanent_address_line ?? "",
+    city: profile.permanent_city ?? "",
+    state: profile.permanent_state ?? "",
+    pincode: profile.permanent_pincode ?? "",
+    years: profile.permanent_residence_years ? String(profile.permanent_residence_years) : "",
+    type: profile.permanent_residence_type ?? "",
+  });
+
+  const [sameAsCurrent, setSameAsCurrent] = useState(false);
+
+  function handleCurrentChange(field: string, value: string) {
+    const updated = { ...currentAddress, [field]: value };
+    setCurrentAddress(updated);
+    if (sameAsCurrent) {
+      setPermanentAddress(updated);
+    }
+  }
+
+  function handleSameAsCurrentToggle(checked: boolean) {
+    setSameAsCurrent(checked);
+    if (checked) {
+      setPermanentAddress({ ...currentAddress });
+    }
+  }
+
+  function handlePermanentChange(field: string, value: string) {
+    setPermanentAddress((prev) => ({ ...prev, [field]: value }));
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -141,8 +180,8 @@ export function IndividualProfileEditor({
                 value={[profile.current_city, profile.current_state].filter(Boolean).join(", ")}
               />
               <Field label="PIN code" value={profile.current_pincode} />
-              <Field label="Residence type" value={profile.current_residence_type} />
               <Field label="Years of residence" value={profile.current_residence_years} />
+              <Field label="Residence type" value={profile.current_residence_type} />
             </dl>
 
             <p className="mt-6 mb-2 text-xs font-semibold text-muted-foreground uppercase">
@@ -157,8 +196,8 @@ export function IndividualProfileEditor({
                   .join(", ")}
               />
               <Field label="PIN code" value={profile.permanent_pincode} />
-              <Field label="Residence type" value={profile.permanent_residence_type} />
               <Field label="Years of residence" value={profile.permanent_residence_years} />
+              <Field label="Residence type" value={profile.permanent_residence_type} />
             </dl>
 
             <p className="mt-6 mb-2 text-xs font-semibold text-muted-foreground uppercase">
@@ -313,20 +352,27 @@ export function IndividualProfileEditor({
               <Input
                 id="current_address_line"
                 name="current_address_line"
-                defaultValue={profile.current_address_line ?? ""}
+                value={currentAddress.line}
+                onChange={(e) => handleCurrentChange("line", e.target.value)}
               />
             </EditableField>
             <div className="grid grid-cols-4 gap-4">
               <EditableField>
                 <Label htmlFor="current_city">City</Label>
-                <Input id="current_city" name="current_city" defaultValue={profile.current_city ?? ""} />
+                <Input
+                  id="current_city"
+                  name="current_city"
+                  value={currentAddress.city}
+                  onChange={(e) => handleCurrentChange("city", e.target.value)}
+                />
               </EditableField>
               <EditableField>
                 <Label htmlFor="current_state">State</Label>
                 <Input
                   id="current_state"
                   name="current_state"
-                  defaultValue={profile.current_state ?? ""}
+                  value={currentAddress.state}
+                  onChange={(e) => handleCurrentChange("state", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -334,7 +380,8 @@ export function IndividualProfileEditor({
                 <Input
                   id="current_pincode"
                   name="current_pincode"
-                  defaultValue={profile.current_pincode ?? ""}
+                  value={currentAddress.pincode}
+                  onChange={(e) => handleCurrentChange("pincode", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -343,7 +390,8 @@ export function IndividualProfileEditor({
                   id="current_residence_years"
                   name="current_residence_years"
                   type="number"
-                  defaultValue={profile.current_residence_years ?? ""}
+                  value={currentAddress.years}
+                  onChange={(e) => handleCurrentChange("years", e.target.value)}
                 />
               </EditableField>
             </div>
@@ -351,7 +399,8 @@ export function IndividualProfileEditor({
               <Label htmlFor="current_residence_type">Residence type</Label>
               <Select
                 name="current_residence_type"
-                defaultValue={profile.current_residence_type ?? undefined}
+                value={currentAddress.type}
+                onValueChange={(val) => handleCurrentChange("type", val ?? "")}
               >
                 <SelectTrigger id="current_residence_type" className="w-40">
                   <SelectValue placeholder="Select" />
@@ -364,15 +413,27 @@ export function IndividualProfileEditor({
               </Select>
             </EditableField>
 
-            <p className="mt-2 text-xs font-semibold text-muted-foreground uppercase">
-              Permanent address
-            </p>
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase">
+                Permanent address
+              </p>
+              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer rounded bg-muted/60 px-2 py-1 hover:bg-muted transition-colors">
+                <input
+                  type="checkbox"
+                  checked={sameAsCurrent}
+                  onChange={(e) => handleSameAsCurrentToggle(e.target.checked)}
+                  className="size-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <span>Same as current address</span>
+              </label>
+            </div>
             <EditableField>
               <Label htmlFor="permanent_address_line">Address</Label>
               <Input
                 id="permanent_address_line"
                 name="permanent_address_line"
-                defaultValue={profile.permanent_address_line ?? ""}
+                value={permanentAddress.line}
+                onChange={(e) => handlePermanentChange("line", e.target.value)}
               />
             </EditableField>
             <div className="grid grid-cols-4 gap-4">
@@ -381,7 +442,8 @@ export function IndividualProfileEditor({
                 <Input
                   id="permanent_city"
                   name="permanent_city"
-                  defaultValue={profile.permanent_city ?? ""}
+                  value={permanentAddress.city}
+                  onChange={(e) => handlePermanentChange("city", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -389,7 +451,8 @@ export function IndividualProfileEditor({
                 <Input
                   id="permanent_state"
                   name="permanent_state"
-                  defaultValue={profile.permanent_state ?? ""}
+                  value={permanentAddress.state}
+                  onChange={(e) => handlePermanentChange("state", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -397,7 +460,8 @@ export function IndividualProfileEditor({
                 <Input
                   id="permanent_pincode"
                   name="permanent_pincode"
-                  defaultValue={profile.permanent_pincode ?? ""}
+                  value={permanentAddress.pincode}
+                  onChange={(e) => handlePermanentChange("pincode", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -406,7 +470,8 @@ export function IndividualProfileEditor({
                   id="permanent_residence_years"
                   name="permanent_residence_years"
                   type="number"
-                  defaultValue={profile.permanent_residence_years ?? ""}
+                  value={permanentAddress.years}
+                  onChange={(e) => handlePermanentChange("years", e.target.value)}
                 />
               </EditableField>
             </div>
@@ -414,7 +479,8 @@ export function IndividualProfileEditor({
               <Label htmlFor="permanent_residence_type">Residence type</Label>
               <Select
                 name="permanent_residence_type"
-                defaultValue={profile.permanent_residence_type ?? undefined}
+                value={permanentAddress.type}
+                onValueChange={(val) => handlePermanentChange("type", val ?? "")}
               >
                 <SelectTrigger id="permanent_residence_type" className="w-40">
                   <SelectValue placeholder="Select" />
@@ -501,7 +567,7 @@ export function IndividualProfileEditor({
   );
 }
 
-type CorporateProfile = {
+export type CorporateProfile = {
   legal_name: string;
   trade_name: string | null;
   business_type: string | null;
@@ -532,6 +598,41 @@ export function CorporateProfileEditor({
   profile: CorporateProfile;
 }) {
   const { editing, setEditing, state, formAction, pending } = useEditToggle(updateCorporateProfile);
+
+  const [corporateOffice, setCorporateOffice] = useState({
+    address: profile.corporate_office_address ?? "",
+    city: profile.corporate_office_city ?? "",
+    state: profile.corporate_office_state ?? "",
+    pincode: profile.corporate_office_pincode ?? "",
+  });
+
+  const [registeredOffice, setRegisteredOffice] = useState({
+    address: profile.registered_office_address ?? "",
+    city: profile.registered_office_city ?? "",
+    state: profile.registered_office_state ?? "",
+    pincode: profile.registered_office_pincode ?? "",
+  });
+
+  const [sameAsCorporate, setSameAsCorporate] = useState(false);
+
+  function handleCorporateChange(field: string, value: string) {
+    const updated = { ...corporateOffice, [field]: value };
+    setCorporateOffice(updated);
+    if (sameAsCorporate) {
+      setRegisteredOffice(updated);
+    }
+  }
+
+  function handleSameAsCorporateToggle(checked: boolean) {
+    setSameAsCorporate(checked);
+    if (checked) {
+      setRegisteredOffice({ ...corporateOffice });
+    }
+  }
+
+  function handleRegisteredChange(field: string, value: string) {
+    setRegisteredOffice((prev) => ({ ...prev, [field]: value }));
+  }
 
   return (
     <Card>
@@ -690,7 +791,8 @@ export function CorporateProfileEditor({
               <Input
                 id="corporate_office_address"
                 name="corporate_office_address"
-                defaultValue={profile.corporate_office_address ?? ""}
+                value={corporateOffice.address}
+                onChange={(e) => handleCorporateChange("address", e.target.value)}
               />
             </EditableField>
             <div className="grid grid-cols-3 gap-4">
@@ -699,7 +801,8 @@ export function CorporateProfileEditor({
                 <Input
                   id="corporate_office_city"
                   name="corporate_office_city"
-                  defaultValue={profile.corporate_office_city ?? ""}
+                  value={corporateOffice.city}
+                  onChange={(e) => handleCorporateChange("city", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -707,7 +810,8 @@ export function CorporateProfileEditor({
                 <Input
                   id="corporate_office_state"
                   name="corporate_office_state"
-                  defaultValue={profile.corporate_office_state ?? ""}
+                  value={corporateOffice.state}
+                  onChange={(e) => handleCorporateChange("state", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -715,20 +819,33 @@ export function CorporateProfileEditor({
                 <Input
                   id="corporate_office_pincode"
                   name="corporate_office_pincode"
-                  defaultValue={profile.corporate_office_pincode ?? ""}
+                  value={corporateOffice.pincode}
+                  onChange={(e) => handleCorporateChange("pincode", e.target.value)}
                 />
               </EditableField>
             </div>
 
-            <p className="mt-2 text-xs font-semibold text-muted-foreground uppercase">
-              Registered office address
-            </p>
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase">
+                Registered office address
+              </p>
+              <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer rounded bg-muted/60 px-2 py-1 hover:bg-muted transition-colors">
+                <input
+                  type="checkbox"
+                  checked={sameAsCorporate}
+                  onChange={(e) => handleSameAsCorporateToggle(e.target.checked)}
+                  className="size-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <span>Same as corporate head office</span>
+              </label>
+            </div>
             <EditableField>
               <Label htmlFor="registered_office_address">Address</Label>
               <Input
                 id="registered_office_address"
                 name="registered_office_address"
-                defaultValue={profile.registered_office_address ?? ""}
+                value={registeredOffice.address}
+                onChange={(e) => handleRegisteredChange("address", e.target.value)}
               />
             </EditableField>
             <div className="grid grid-cols-3 gap-4">
@@ -737,7 +854,8 @@ export function CorporateProfileEditor({
                 <Input
                   id="registered_office_city"
                   name="registered_office_city"
-                  defaultValue={profile.registered_office_city ?? ""}
+                  value={registeredOffice.city}
+                  onChange={(e) => handleRegisteredChange("city", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -745,7 +863,8 @@ export function CorporateProfileEditor({
                 <Input
                   id="registered_office_state"
                   name="registered_office_state"
-                  defaultValue={profile.registered_office_state ?? ""}
+                  value={registeredOffice.state}
+                  onChange={(e) => handleRegisteredChange("state", e.target.value)}
                 />
               </EditableField>
               <EditableField>
@@ -753,7 +872,8 @@ export function CorporateProfileEditor({
                 <Input
                   id="registered_office_pincode"
                   name="registered_office_pincode"
-                  defaultValue={profile.registered_office_pincode ?? ""}
+                  value={registeredOffice.pincode}
+                  onChange={(e) => handleRegisteredChange("pincode", e.target.value)}
                 />
               </EditableField>
             </div>
@@ -775,7 +895,7 @@ export function CorporateProfileEditor({
   );
 }
 
-type OtherProfile = {
+export type OtherProfile = {
   entity_name: string;
   entity_category: string | null;
   registration_number: string | null;

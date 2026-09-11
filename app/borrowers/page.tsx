@@ -12,14 +12,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn, unwrapRelation } from "@/lib/utils";
+import { cn, unwrapRelation, type Relation } from "@/lib/utils";
 import { DeleteBorrowerButton } from "./[id]/delete-borrower-button";
 
 function displayName(borrower: {
   borrower_type: string;
-  individual_profiles: any;
-  corporate_profiles: any;
-  other_profiles: any;
+  individual_profiles: Relation<{ full_name: string }>;
+  corporate_profiles: Relation<{ legal_name: string }>;
+  other_profiles: Relation<{ entity_name: string }>;
 }) {
   const ind = unwrapRelation<{ full_name: string }>(borrower.individual_profiles);
   const corp = unwrapRelation<{ legal_name: string }>(borrower.corporate_profiles);

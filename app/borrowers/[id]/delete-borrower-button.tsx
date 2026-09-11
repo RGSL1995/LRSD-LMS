@@ -33,12 +33,16 @@ export function DeleteBorrowerButton({
           <DialogTitle>Delete borrower?</DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          This permanently removes the borrower profile, contacts, and any associates. This
-          cannot be undone. If this borrower has loan applications, deletion will be blocked.
+          This permanently removes the borrower profile, contacts, documents, and any associates. This
+          cannot be undone. If this borrower has loan applications or loans, deletion will be blocked.
         </p>
-        <form action={formAction}>
+        <form action={formAction} className="space-y-4">
           <input type="hidden" name="borrower_id" value={borrowerId} />
-          {state.error && <p className="mb-2 text-sm text-destructive">{state.error}</p>}
+          {state.error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive font-medium">
+              {state.error}
+            </div>
+          )}
           <DialogFooter>
             <Button type="submit" variant="destructive" disabled={pending}>
               {pending ? "Deleting..." : "Delete borrower"}

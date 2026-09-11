@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 export type BorrowerFormState = { error: string | null };
+export type CreateBorrowerState = { error: string | null; borrowerId: string | null };
 
 function generateBorrowerCode(borrowerType: string) {
   const prefix = borrowerType.slice(0, 3).toUpperCase();
@@ -22,9 +23,9 @@ function num(formData: FormData, key: string) {
 }
 
 export async function createBorrower(
-  _prevState: BorrowerFormState,
+  _prevState: CreateBorrowerState,
   formData: FormData,
-): Promise<BorrowerFormState> {
+): Promise<CreateBorrowerState> {
   const supabase = await createClient();
 
   const {
@@ -32,13 +33,13 @@ export async function createBorrower(
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return { error: "You must be signed in." };
+    return { error: "You must be signed in.", borrowerId: null };
   }
 
   const borrowerType = formData.get("borrower_type") as string;
 
   if (!["individual", "corporate", "other"].includes(borrowerType)) {
-    return { error: "Select a valid borrower type." };
+    return { error: "Select a valid borrower type.", borrowerId: null };
   }
 
   const { data: borrower, error: borrowerError } = await supabase
@@ -53,13 +54,16 @@ export async function createBorrower(
     .single();
 
   if (borrowerError || !borrower) {
-    return { error: borrowerError?.message ?? "Failed to create borrower." };
+    return {
+      error: borrowerError?.message ?? "Failed to create borrower.",
+      borrowerId: null,
+    };
   }
 
   if (borrowerType === "individual") {
     const fullName = formData.get("full_name") as string;
     if (!fullName) {
-      return { error: "Full name is required for an individual borrower." };
+      return { error: "Full name is required for an individual borrower.", borrowerId: null };
     }
 
     const { error } = await supabase.from("individual_profiles").insert({
@@ -99,11 +103,11 @@ export async function createBorrower(
       office_email: str(formData, "office_email"),
     });
 
-    if (error) return { error: error.message };
+    if (error) return { error: error.message, borrowerId: null };
   } else if (borrowerType === "corporate") {
     const legalName = formData.get("legal_name") as string;
     if (!legalName) {
-      return { error: "Legal name is required for a corporate borrower." };
+      return { error: "Legal name is required for a corporate borrower.", borrowerId: null };
     }
 
     const { error } = await supabase.from("corporate_profiles").insert({
@@ -130,11 +134,11 @@ export async function createBorrower(
       registered_office_pincode: str(formData, "registered_office_pincode"),
     });
 
-    if (error) return { error: error.message };
+    if (error) return { error: error.message, borrowerId: null };
   } else {
     const entityName = formData.get("entity_name") as string;
     if (!entityName) {
-      return { error: "Entity name is required." };
+      return { error: "Entity name is required.", borrowerId: null };
     }
 
     const { error } = await supabase.from("other_profiles").insert({
@@ -146,11 +150,11 @@ export async function createBorrower(
       address: str(formData, "address"),
     });
 
-    if (error) return { error: error.message };
+    if (error) return { error: error.message, borrowerId: null };
   }
 
   revalidatePath("/borrowers");
-  redirect(`/borrowers/${borrower.id}`);
+  return { error: null, borrowerId: borrower.id };
 }
 
 export async function updateIndividualProfile(
@@ -335,18 +339,106 @@ export async function deleteBorrower(
   _prevState: BorrowerFormState,
   formData: FormData,
 ): Promise<BorrowerFormState> {
-  const supabase = await createClient();
-  const borrowerId = formData.get("borrower_id") as string;
+  try {
+    const supabase = await createClient();
+    const borrowerId = formData.get("borrower_id") as string;
 
-  const { error } = await supabase.from("borrowers").delete().eq("id", borrowerId);
+    if (!borrowerId) {
+      return { error: "Borrower ID is required." };
+    }
 
-  if (error) {
-    return {
-      error:
-        error.code === "23503"
-          ? "This borrower cannot be deleted because it has loan applications linked to it."
-          : error.message,
-    };
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "You must be signed in to delete a borrower." };
+    }
+
+    // Check if borrower has linked loan applications
+    const { data: linkedApps, error: appCheckError } = await supabase
+      .from("loan_applications")
+      .select("id")
+      .eq("borrower_id", borrowerId)
+      .limit(1);
+
+    if (appCheckError) {
+      return { error: `Validation check failed: ${appCheckError.message}` };
+    }
+
+    if (linkedApps && linkedApps.length > 0) {
+      return {
+        error: "This borrower cannot be deleted because they have existing loan applications.",
+      };
+    }
+
+    // Check if borrower has linked loans
+    const { data: linkedLoans, error: loanCheckError } = await supabase
+      .from("loans")
+      .select("id")
+      .eq("borrower_id", borrowerId)
+      .limit(1);
+
+    if (loanCheckError) {
+      return { error: `Validation check failed: ${loanCheckError.message}` };
+    }
+
+    if (linkedLoans && linkedLoans.length > 0) {
+      return {
+        error: "This borrower cannot be deleted because they have active or closed loans.",
+      };
+    }
+
+    // Retrieve storage paths for any documents to clean up storage
+    const { data: docs } = await supabase
+      .from("borrower_documents")
+      .select("storage_path")
+      .eq("borrower_id", borrowerId);
+
+    if (docs && docs.length > 0) {
+      const paths = docs.map((d) => d.storage_path).filter(Boolean);
+      if (paths.length > 0) {
+        await supabase.storage.from("borrower-documents").remove(paths);
+      }
+    }
+
+    // Explicitly delete child relations in case RLS or cascades are restricted
+    await supabase.from("borrower_documents").delete().eq("borrower_id", borrowerId);
+    await supabase.from("corporate_financials").delete().eq("borrower_id", borrowerId);
+    await supabase.from("borrower_contacts").delete().eq("borrower_id", borrowerId);
+    await supabase.from("corporate_associates").delete().eq("borrower_id", borrowerId);
+    await supabase.from("individual_profiles").delete().eq("borrower_id", borrowerId);
+    await supabase.from("corporate_profiles").delete().eq("borrower_id", borrowerId);
+    await supabase.from("other_profiles").delete().eq("borrower_id", borrowerId);
+
+    const { error, count } = await supabase
+      .from("borrowers")
+      .delete({ count: "exact" })
+      .eq("id", borrowerId);
+
+    if (error) {
+      console.error("Delete borrower database error:", error);
+      return {
+        error:
+          error.code === "23503"
+            ? "This borrower cannot be deleted because they have linked loan records."
+            : `Database error: ${error.message}`,
+      };
+    }
+
+    if (count === 0) {
+      return {
+        error:
+          "Delete failed: 0 rows deleted. If RLS is enabled in your Supabase project, make sure you ran the SQL policy for DELETE on table 'borrowers'.",
+      };
+    }
+  } catch (err: unknown) {
+    const errorObj = err as { message?: string; digest?: string };
+    if (errorObj?.message === "NEXT_REDIRECT" || errorObj?.digest?.startsWith("NEXT_REDIRECT")) {
+      throw err;
+    }
+    console.error("deleteBorrower unexpected error:", err);
+    return { error: errorObj?.message ?? "An unexpected error occurred during deletion." };
   }
 
   revalidatePath("/borrowers");
@@ -369,6 +461,29 @@ export async function addBorrowerContact(formData: FormData) {
   revalidatePath(`/borrowers/${borrowerId}`);
 }
 
+export async function deleteBorrowerContact(formData: FormData) {
+  const supabase = await createClient();
+  const contactId = formData.get("contact_id") as string;
+  const borrowerId = formData.get("borrower_id") as string;
+
+  await supabase.from("borrower_contacts").delete().eq("id", contactId);
+
+  if (borrowerId) {
+    revalidatePath(`/borrowers/${borrowerId}`);
+  }
+}
+
+export async function getBorrowerContacts(borrowerId: string) {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("borrower_contacts")
+    .select("*")
+    .eq("borrower_id", borrowerId)
+    .order("created_at", { ascending: true });
+
+  return data ?? [];
+}
+
 export async function addCorporateAssociate(formData: FormData) {
   const supabase = await createClient();
   const borrowerId = formData.get("borrower_id") as string;
@@ -387,4 +502,27 @@ export async function addCorporateAssociate(formData: FormData) {
   });
 
   revalidatePath(`/borrowers/${borrowerId}`);
+}
+
+export async function deleteCorporateAssociate(formData: FormData) {
+  const supabase = await createClient();
+  const associateId = formData.get("associate_id") as string;
+  const borrowerId = formData.get("borrower_id") as string;
+
+  await supabase.from("corporate_associates").delete().eq("id", associateId);
+
+  if (borrowerId) {
+    revalidatePath(`/borrowers/${borrowerId}`);
+  }
+}
+
+export async function getCorporateAssociates(borrowerId: string) {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("corporate_associates")
+    .select("*")
+    .eq("borrower_id", borrowerId)
+    .order("created_at", { ascending: true });
+
+  return data ?? [];
 }
