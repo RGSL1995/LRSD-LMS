@@ -11,6 +11,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CorporateDataUploader } from "@/app/borrowers/corporate-data-uploader";
+import { EraseProfileButton } from "@/app/borrowers/erase-profile-button";
+import { BorrowerAvatar } from "@/components/ui/borrower-avatar";
+import type { ExtractedCorporateData } from "@/app/borrowers/corporate-types";
 import {
   Select,
   SelectContent,
@@ -143,7 +147,19 @@ export function IndividualProfileEditor({
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-base">Profile</CardTitle>
+        <div className="flex items-center gap-3">
+          <BorrowerAvatar
+            borrowerId={borrowerId}
+            name={profile.full_name}
+            type="individual"
+            size="md"
+            editable={true}
+          />
+          <div>
+            <CardTitle className="text-base">Personal Profile</CardTitle>
+            <p className="text-xs text-muted-foreground">KYC, address, and employment details</p>
+          </div>
+        </div>
         {!editing && (
           <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
             Edit
@@ -593,9 +609,11 @@ export type CorporateProfile = {
 export function CorporateProfileEditor({
   borrowerId,
   profile,
+  onExtracted,
 }: {
   borrowerId: string;
   profile: CorporateProfile;
+  onExtracted?: (data: ExtractedCorporateData) => void;
 }) {
   const { editing, setEditing, state, formAction, pending } = useEditToggle(updateCorporateProfile);
 
@@ -635,15 +653,35 @@ export function CorporateProfileEditor({
   }
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-base">Profile</CardTitle>
-        {!editing && (
-          <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-            Edit
-          </Button>
-        )}
-      </CardHeader>
+    <div className="space-y-6">
+      {!profile.legal_name && (
+        <CorporateDataUploader borrowerId={borrowerId} onPdfExtracted={onExtracted} />
+      )}
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div className="flex items-center gap-3">
+            <BorrowerAvatar
+              borrowerId={borrowerId}
+              name={profile.legal_name}
+              type="corporate"
+              size="md"
+              editable={true}
+            />
+            <div>
+              <CardTitle className="text-base">Company Profile</CardTitle>
+              <p className="text-xs text-muted-foreground">Corporate identity, registration, and offices</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <EraseProfileButton borrowerId={borrowerId} />
+            {!editing && (
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+            )}
+          </div>
+        </CardHeader>
       <CardContent>
         {!editing ? (
           <>
@@ -892,6 +930,7 @@ export function CorporateProfileEditor({
         )}
       </CardContent>
     </Card>
+    </div>
   );
 }
 

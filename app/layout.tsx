@@ -17,7 +17,11 @@ export const metadata: Metadata = {
   description: "Internal loan management system for LRSD Capital employees.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html
       lang="en"

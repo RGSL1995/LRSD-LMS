@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useTransition } from "react";
+import { useState, useEffect, useTransition, useMemo } from "react";
 import {
   addCorporateAssociate,
   deleteCorporateAssociate,
@@ -16,6 +16,7 @@ import {
   type GroupStructureRow,
   type RelatedPartyTransactionRow,
 } from "@/app/borrowers/governance-actions";
+import { getLatestCorporateReport } from "@/app/borrowers/corporate-ingest-actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,7 +44,12 @@ import {
   Building2,
   ArrowRightLeft,
   AlertTriangle,
+  Search,
+  X,
 } from "lucide-react";
+
+import type { ExtractedCorporateData } from "./corporate-types";
+import { PieChart } from "lucide-react";
 
 interface Associate {
   id: string;
@@ -57,14 +63,48 @@ interface Associate {
   shareholding_percent: number | null;
 }
 
-export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) {
+export function GovernanceStructureStep({
+  borrowerId,
+  extractedData,
+  activeSection = "all",
+}: {
+  borrowerId: string;
+  extractedData?: ExtractedCorporateData | null;
+  activeSection?: "all" | "rpt_only" | "structure_only";
+}) {
+  const [corporateData, setCorporateData] = useState<ExtractedCorporateData | null>(
+    extractedData ?? null,
+  );
+
+  useEffect(() => {
+    if (extractedData) {
+      setCorporateData(extractedData);
+    }
+  }, [extractedData]);
+
+  useEffect(() => {
+    if (!corporateData && borrowerId) {
+      getLatestCorporateReport(borrowerId).then((report) => {
+        if (report) {
+          setCorporateData(report);
+        }
+      });
+    }
+  }, [borrowerId, corporateData]);
+
   const [associates, setAssociates] = useState<Associate[]>([]);
   const [groupEntities, setGroupEntities] = useState<GroupStructureRow[]>([]);
   const [rptList, setRptList] = useState<RelatedPartyTransactionRow[]>([]);
+  const [dismissedEntities, setDismissedEntities] = useState<Set<string>>(new Set());
+  const [dismissedRpt, setDismissedRpt] = useState<Set<string>>(new Set());
 
   const [associateDialogOpen, setAssociateDialogOpen] = useState(false);
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [rptDialogOpen, setRptDialogOpen] = useState(false);
+
+  // RPT Filter and Search state
+  const [rptSearch, setRptSearch] = useState("");
+  const [rptMaterialOnly, setRptMaterialOnly] = useState(false);
 
   const [, startTransition] = useTransition();
 
@@ -113,6 +153,10 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
   }
 
   async function handleDeleteGroupEntity(id: string) {
+    if (id.startsWith("extracted-")) {
+      setDismissedEntities((prev) => new Set(prev).add(id));
+      return;
+    }
     const formData = new FormData();
     formData.set("id", id);
     formData.set("borrower_id", borrowerId);
@@ -130,6 +174,10 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
   }
 
   async function handleDeleteRpt(id: string) {
+    if (id.startsWith("extracted-")) {
+      setDismissedRpt((prev) => new Set(prev).add(id));
+      return;
+    }
     const formData = new FormData();
     formData.set("id", id);
     formData.set("borrower_id", borrowerId);
@@ -137,10 +185,130 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
     refresh();
   }
 
+  // Display group entities: fallback to extracted structure if database is empty
+  const displayGroupEntities = useMemo(() => {
+    if (groupEntities.length > 0) return groupEntities;
+    if (corporateData?.groupStructure && corporateData.groupStructure.length > 0) {
+      return corporateData.groupStructure
+        .map((s, idx) => ({
+          id: `extracted-group-${idx}`,
+          borrower_id: borrowerId,
+          entity_name: s.entity_name,
+          relationship_type: s.relationship_type,
+          percentage_holding: s.percentage_holding ?? null,
+          cin_or_registration: s.cin_or_registration ?? null,
+          country_of_incorporation: "India",
+          business_nature: s.city ? `City: ${s.city}` : null,
+          created_at: new Date().toISOString(),
+        }))
+        .filter((e) => !dismissedEntities.has(e.id));
+    }
+    return [];
+  }, [groupEntities, corporateData, borrowerId, dismissedEntities]);
+
+  // Raw RPT list: fallback to extracted RPT if database is empty
+  const rawRptList = useMemo(() => {
+    if (rptList.length > 0) return rptList;
+    if (corporateData?.rpt && corporateData.rpt.length > 0) {
+      return corporateData.rpt
+        .map((r, idx) => ({
+          id: `extracted-rpt-${idx}`,
+          borrower_id: borrowerId,
+          related_party_name: r.partyName,
+          relationship_nature: r.relationship,
+          transaction_type: r.transactionType.toLowerCase().replace(/ /g, "_"),
+          amount: r.amountInr || (r.amountCrore ? Math.round(r.amountCrore * 10000000) : 0),
+          financial_year: r.financialYear || "FY 2024-25",
+          description: r.amountCrore !== null ? `₹${r.amountCrore.toFixed(2)} Cr (${r.category})` : "Undisclosed in report",
+          is_material: Boolean(r.isMaterial),
+          created_at: new Date().toISOString(),
+        }))
+        .filter((r) => !dismissedRpt.has(r.id));
+    }
+    return [];
+  }, [rptList, corporateData, borrowerId, dismissedRpt]);
+
+  // Filtered RPT list with search and materiality filter
+  const displayRptList = useMemo(() => {
+    return rawRptList.filter((item) => {
+      if (rptMaterialOnly && !item.is_material) return false;
+      if (rptSearch.trim()) {
+        const q = rptSearch.toLowerCase();
+        const matchName = item.related_party_name.toLowerCase().includes(q);
+        const matchType = item.transaction_type.toLowerCase().includes(q);
+        const matchRel = item.relationship_nature.toLowerCase().includes(q);
+        const matchFy = item.financial_year.toLowerCase().includes(q);
+        if (!matchName && !matchType && !matchRel && !matchFy) return false;
+      }
+      return true;
+    });
+  }, [rawRptList, rptMaterialOnly, rptSearch]);
+
+  const structure = corporateData?.structure;
+
   return (
     <div className="space-y-8">
-      {/* 1. DIRECTORS & KEY MANAGEMENT */}
-      <Card>
+      {/* 0. SHAREHOLDING PATTERN */}
+      {structure && activeSection !== "rpt_only" && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <PieChart className="size-4 text-primary" /> Corporate Shareholding Pattern
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Promoter vs Public equity distribution and substantial shareholding
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="rounded-lg border bg-background p-3">
+                <span className="text-[10px] text-muted-foreground block">Promoter Holding</span>
+                <span className="text-base font-bold text-emerald-600">
+                  {structure.promoter_percent ? `${structure.promoter_percent}%` : "-"}
+                </span>
+              </div>
+              <div className="rounded-lg border bg-background p-3">
+                <span className="text-[10px] text-muted-foreground block">Public Holding</span>
+                <span className="text-base font-bold text-foreground">
+                  {structure.public_percent ? `${structure.public_percent}%` : "-"}
+                </span>
+              </div>
+              <div className="rounded-lg border bg-background p-3">
+                <span className="text-[10px] text-muted-foreground block">Total Shareholders</span>
+                <span className="text-base font-bold text-foreground">
+                  {structure.total_shareholders?.toLocaleString() || "-"}
+                </span>
+              </div>
+              <div className="rounded-lg border bg-background p-3">
+                <span className="text-[10px] text-muted-foreground block">Total Equity Shares</span>
+                <span className="text-base font-bold text-foreground">
+                  {structure.total_equity_shares?.toLocaleString() || "-"}
+                </span>
+              </div>
+            </div>
+
+            {structure.major_shareholders.length > 0 && (
+              <div>
+                <span className="text-xs font-semibold block mb-1.5">Major Shareholders (&gt; 5% Holding):</span>
+                <div className="flex flex-wrap gap-2">
+                  {structure.major_shareholders.map((sh, i) => (
+                    <div key={i} className="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs">
+                      <span className="font-medium text-foreground">{sh.name}</span>
+                      <Badge variant="secondary" className="text-[11px] font-mono">
+                        {sh.shareholding_percent}%
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 1. BOARD OF DIRECTORS & KEY MANAGEMENT PERSONNEL */}
+      {activeSection === "all" && (
+        <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-3">
           <div>
             <CardTitle className="text-base flex items-center gap-2">
@@ -276,9 +444,11 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* 2. GROUP & SUBSIDIARY STRUCTURE */}
-      <Card>
+      {activeSection !== "rpt_only" && (
+        <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-3">
           <div>
             <CardTitle className="text-base flex items-center gap-2">
@@ -353,7 +523,7 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
           </Dialog>
         </CardHeader>
         <CardContent>
-          {groupEntities.length > 0 ? (
+          {displayGroupEntities.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border">
               <table className="w-full text-xs">
                 <thead className="bg-muted/50">
@@ -366,7 +536,7 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {groupEntities.map((ent) => (
+                  {displayGroupEntities.map((ent) => (
                     <tr key={ent.id} className="hover:bg-muted/30">
                       <td className="px-3 py-2 font-medium">
                         {ent.entity_name}
@@ -406,8 +576,10 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* 3. RELATED PARTY TRANSACTIONS (RPT) */}
+      {activeSection !== "structure_only" && (
       <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-3">
           <div>
@@ -484,8 +656,63 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
             </DialogContent>
           </Dialog>
         </CardHeader>
-        <CardContent>
-          {rptList.length > 0 ? (
+        <CardContent className="space-y-4">
+          {rawRptList.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-lg bg-muted/40 border text-xs">
+              <div>
+                <span className="text-muted-foreground block text-[11px]">Total Disclosed Transactions</span>
+                <span className="font-bold text-sm text-foreground">{rawRptList.length} Records</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground block text-[11px]">Material Transactions</span>
+                <span className="font-bold text-sm text-amber-600">
+                  {rawRptList.filter((r) => r.is_material).length} Flagged
+                </span>
+              </div>
+              <div>
+                <span className="text-muted-foreground block text-[11px]">Cumulative Disclosed Value</span>
+                <span className="font-bold text-sm text-primary">
+                  ₹{rawRptList.reduce((sum, r) => sum + Number(r.amount || 0), 0).toLocaleString("en-IN")}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Search & Material Filter Controls */}
+          {rawRptList.length > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+              <div className="relative sm:w-72">
+                <Search className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+                <Input
+                  placeholder="Search party name, type, relation..."
+                  value={rptSearch}
+                  onChange={(e) => setRptSearch(e.target.value)}
+                  className="h-8 pl-8 text-xs"
+                />
+                {rptSearch && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setRptSearch("")}
+                    className="h-8 px-2 absolute right-0 top-0 text-xs"
+                  >
+                    <X className="size-3" />
+                  </Button>
+                )}
+              </div>
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rptMaterialOnly}
+                  onChange={(e) => setRptMaterialOnly(e.target.checked)}
+                  className="size-3.5 rounded"
+                />
+                <span>Show Material Transactions Only</span>
+              </label>
+            </div>
+          )}
+
+          {displayRptList.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border">
               <table className="w-full text-xs">
                 <thead className="bg-muted/50">
@@ -498,7 +725,7 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {rptList.map((rpt) => (
+                  {displayRptList.map((rpt) => (
                     <tr key={rpt.id} className="hover:bg-muted/30">
                       <td className="px-3 py-2 font-medium">
                         <div className="flex items-center gap-1.5">
@@ -510,6 +737,9 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
                           )}
                         </div>
                         <div className="text-[11px] text-muted-foreground">{rpt.relationship_nature}</div>
+                        {rpt.description && (
+                          <div className="text-[10px] text-muted-foreground/75 mt-0.5">{rpt.description}</div>
+                        )}
                       </td>
                       <td className="px-3 py-2 capitalize">{rpt.transaction_type.replace(/_/g, " ")}</td>
                       <td className="px-3 py-2 text-muted-foreground">{rpt.financial_year}</td>
@@ -537,6 +767,7 @@ export function GovernanceStructureStep({ borrowerId }: { borrowerId: string }) 
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

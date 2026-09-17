@@ -31,6 +31,9 @@ import {
 } from "@/components/ui/dialog";
 import { Plus, Trash2, Users, Mail, Phone, ShieldCheck } from "lucide-react";
 import type { BorrowerType } from "@/app/borrowers/document-categories";
+import type { ExtractedCorporateData } from "./corporate-types";
+import { getLatestCorporateReport } from "./corporate-ingest-actions";
+import { cn } from "@/lib/utils";
 
 interface Contact {
   id: string;
@@ -54,13 +57,37 @@ interface Associate {
   shareholding_percent: number | null;
 }
 
+interface ContactsAssociatesStepProps {
+  borrowerId: string;
+  borrowerType: BorrowerType;
+  extractedData?: ExtractedCorporateData | null;
+}
+
 export function ContactsAssociatesStep({
   borrowerId,
   borrowerType,
-}: {
-  borrowerId: string;
-  borrowerType: BorrowerType;
-}) {
+  extractedData,
+}: ContactsAssociatesStepProps) {
+  const [corporateData, setCorporateData] = useState<ExtractedCorporateData | null>(
+    extractedData ?? null,
+  );
+
+  useEffect(() => {
+    if (extractedData) {
+      setCorporateData(extractedData);
+    }
+  }, [extractedData]);
+
+  useEffect(() => {
+    if (!corporateData && borrowerId && borrowerType === "corporate") {
+      getLatestCorporateReport(borrowerId).then((report) => {
+        if (report) {
+          setCorporateData(report);
+        }
+      });
+    }
+  }, [borrowerId, borrowerType, corporateData]);
+
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [associates, setAssociates] = useState<Associate[]>([]);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
@@ -119,6 +146,82 @@ export function ContactsAssociatesStep({
 
   return (
     <div className="space-y-6">
+      {/* Extracted Board of Directors & KMP from MCA / Corporate Report */}
+      {borrowerType === "corporate" && corporateData?.associates && corporateData.associates.length > 0 && (
+        <Card className="border-blue-500/30 bg-blue-50/10 dark:bg-blue-950/10">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <ShieldCheck className="size-4 text-blue-600 dark:text-blue-400" />
+                  MCA Verified Board of Directors &amp; KMP
+                  <Badge variant="secondary" className="text-xs bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200">
+                    {corporateData.associates.length} Identified
+                  </Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Director Identification Numbers (DIN), appointment dates, designations, and equity shareholdings from official filings
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-lg border bg-background">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/60 text-muted-foreground font-semibold">
+                  <tr>
+                    <th className="px-3 py-2.5 text-left">Director / KMP Name</th>
+                    <th className="px-3 py-2.5 text-left">DIN / PAN</th>
+                    <th className="px-3 py-2.5 text-left">Designation</th>
+                    <th className="px-3 py-2.5 text-left">Appointment Date</th>
+                    <th className="px-3 py-2.5 text-right">Shareholding %</th>
+                    <th className="px-3 py-2.5 text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {corporateData.associates.map((assoc, idx) => (
+                    <tr key={assoc.din || idx} className="hover:bg-muted/30 transition-colors">
+                      <td className="px-3 py-2.5 font-medium text-foreground">
+                        {assoc.full_name}
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-[11px] text-muted-foreground">
+                        {assoc.din || "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-muted-foreground">
+                        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+                          {assoc.designation || assoc.associate_role}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-muted-foreground">
+                        {assoc.appointment_date || "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-semibold text-foreground">
+                        {assoc.shareholding_percent !== null && assoc.shareholding_percent !== undefined
+                          ? `${assoc.shareholding_percent}%`
+                          : "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px] px-1.5 py-0 h-4 font-normal",
+                            assoc.is_active
+                              ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+                              : "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30",
+                          )}
+                        >
+                          {assoc.is_active ? "Active" : "Resigned"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Authorized Contacts */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-3">

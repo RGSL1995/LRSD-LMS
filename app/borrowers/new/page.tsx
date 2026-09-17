@@ -7,6 +7,7 @@ import { createBorrower, type CreateBorrowerState } from "@/app/borrowers/action
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
@@ -19,9 +20,13 @@ import {
 import { WizardStepper, type WizardStepItem } from "@/components/ui/wizard-stepper";
 import { ContactsAssociatesStep } from "@/app/borrowers/contacts-associates-step";
 import { DocumentStageSection } from "@/app/borrowers/document-stage-section";
-import { FinancialReportUpload } from "@/app/borrowers/financial-report-upload";
 import { GovernanceStructureStep } from "@/app/borrowers/governance-structure-step";
 import { FinancialsGstStep } from "@/app/borrowers/financials-gst-step";
+import { ChargesLendersStep } from "@/app/borrowers/charges-lenders-step";
+import { PeerComparisonStep } from "@/app/borrowers/peer-comparison-step";
+import { ComplianceFinalizeStep } from "@/app/borrowers/compliance-finalize-step";
+import { CorporateDataUploader } from "@/app/borrowers/corporate-data-uploader";
+import type { ExtractedCorporateData } from "@/app/borrowers/corporate-types";
 import type { BorrowerType } from "@/app/borrowers/document-categories";
 import {
   ArrowLeft,
@@ -32,6 +37,7 @@ import {
   Building2,
   FileSpreadsheet,
   FileCheck,
+  ShieldCheck,
 } from "lucide-react";
 
 const CORPORATE_WIZARD_STEPS: WizardStepItem[] = [
@@ -64,6 +70,9 @@ export default function NewBorrowerPage() {
   const [borrowerId, setBorrowerId] = useState<string | null>(null);
   const [profileSummary, setProfileSummary] = useState<string | null>(null);
   const [lastHandled, setLastHandled] = useState(state);
+  const [corporateExtractedData, setCorporateExtractedData] = useState<ExtractedCorporateData | null>(null);
+  const [step3Tab, setStep3Tab] = useState<"structure" | "charges">("structure");
+  const [step4Tab, setStep4Tab] = useState<"financials" | "peers">("financials");
 
   const isCorporate = borrowerType === "corporate";
   const wizardSteps = isCorporate ? CORPORATE_WIZARD_STEPS : INDIVIDUAL_WIZARD_STEPS;
@@ -116,36 +125,45 @@ export default function NewBorrowerPage() {
 
       {/* Stepper Bar */}
       <div className="border-b bg-card/60 backdrop-blur-xs py-4 shadow-xs">
-        <div className="mx-auto max-w-4xl px-4">
+        <div className="mx-auto max-w-5xl px-4">
           <WizardStepper
             steps={wizardSteps}
             currentStep={currentStep}
-            maxAccessibleStep={maxAccessibleStep}
             onStepClick={(step) => setCurrentStep(step)}
+            maxAccessibleStep={maxAccessibleStep}
           />
         </div>
       </div>
 
-      <main className="mx-auto max-w-3xl px-4 pt-8">
-        {/* STEP 1: Profile Details */}
+      {/* Wizard Content */}
+      <main className="mx-auto max-w-4xl px-4 pt-8">
+        {/* STEP 1: Profile */}
         {currentStep === 1 && (
           <div className="space-y-6">
             <div className="flex items-center justify-between pb-2 border-b">
               <div>
                 <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <User className="size-5 text-primary" /> Step 1: Borrower Profile
+                  {borrowerType === "individual" ? (
+                    <User className="size-5 text-primary" />
+                  ) : (
+                    <Building2 className="size-5 text-primary" />
+                  )}
+                  Step 1: {isCorporate ? "Company Profile" : "Borrower Profile"}
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Select entity type and enter primary identity and contact details
+                  {isCorporate
+                    ? "Corporate identity, business activities, capital & regulatory highlights"
+                    : "Basic entity classification and identification details"}
                 </p>
               </div>
+
               {borrowerId && (
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   onClick={() => setCurrentStep(2)}
-                  className="gap-1.5"
+                  className="text-xs text-muted-foreground gap-1"
                 >
                   Skip to Next Step <ArrowRight className="size-3.5" />
                 </Button>
@@ -185,7 +203,9 @@ export default function NewBorrowerPage() {
               </Card>
 
               {borrowerType === "individual" && <IndividualFields />}
-              {borrowerType === "corporate" && <CorporateFields />}
+              {borrowerType === "corporate" && (
+                <CorporateFields onExtractedDataChange={setCorporateExtractedData} />
+              )}
               {borrowerType === "other" && <OtherFields />}
 
               {state.error && (
@@ -196,7 +216,9 @@ export default function NewBorrowerPage() {
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t">
                 <Button type="submit" size="lg" disabled={pending} className="gap-2">
-                  {pending ? "Saving & Initializing..." : "Save & Continue to Step 2"}
+                  {pending
+                    ? "Saving & Initializing..."
+                    : `Save & Continue to Step 2 (${isCorporate ? "Key Contacts" : "Contacts"})`}
                   <ArrowRight className="size-4" />
                 </Button>
               </div>
@@ -204,7 +226,7 @@ export default function NewBorrowerPage() {
           </div>
         )}
 
-        {/* STEP 2: Contacts */}
+        {/* STEP 2: Key Contacts */}
         {currentStep === 2 && borrowerId && (
           <div className="space-y-6">
             <div className="flex items-center justify-between pb-2 border-b">
@@ -213,12 +235,18 @@ export default function NewBorrowerPage() {
                   <Users className="size-5 text-primary" /> Step 2: Key Contacts
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Add primary and secondary operational contact persons
+                  {isCorporate
+                    ? "Board of directors, KMP, DINs, and primary operational contact persons"
+                    : "Add primary and secondary operational contact persons"}
                 </p>
               </div>
             </div>
 
-            <ContactsAssociatesStep borrowerId={borrowerId} borrowerType={borrowerType} />
+            <ContactsAssociatesStep
+              borrowerId={borrowerId}
+              borrowerType={borrowerType}
+              extractedData={corporateExtractedData}
+            />
 
             <div className="flex items-center justify-between pt-6 border-t">
               <Button
@@ -227,7 +255,7 @@ export default function NewBorrowerPage() {
                 onClick={() => setCurrentStep(1)}
                 className="gap-1.5"
               >
-                <ArrowLeft className="size-4" /> Back to Profile
+                <ArrowLeft className="size-4" /> Back to Step 1 ({isCorporate ? "Company Profile" : "Profile"})
               </Button>
               <Button
                 type="button"
@@ -235,7 +263,7 @@ export default function NewBorrowerPage() {
                 onClick={() => setCurrentStep(3)}
                 className="gap-2"
               >
-                Continue to Step 3 ({isCorporate ? "Governance" : "KYC"}) <ArrowRight className="size-4" />
+                Continue to Step 3 ({isCorporate ? "Governance & Structure" : "KYC"}) <ArrowRight className="size-4" />
               </Button>
             </div>
           </div>
@@ -244,18 +272,55 @@ export default function NewBorrowerPage() {
         {/* CORPORATE STEP 3: Governance & Structure */}
         {isCorporate && currentStep === 3 && borrowerId && (
           <div className="space-y-6">
-            <div className="flex items-center justify-between pb-2 border-b">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 border-b gap-3">
               <div>
                 <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <Building2 className="size-5 text-primary" /> Step 3: Governance &amp; Corporate Structure
+                  <Building2 className="size-5 text-primary" /> Step 3: Governance &amp; Structure
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Directors, Group / Subsidiary Structure, and Related Party Transactions (RPT)
+                  Shareholding pattern, group companies &amp; subsidiaries, and MCA registered charges
                 </p>
+              </div>
+
+              {/* Sub-Tabs for Step 3 */}
+              <div className="flex items-center gap-1 bg-muted p-1 rounded-lg">
+                <Button
+                  type="button"
+                  variant={step3Tab === "structure" ? "default" : "ghost"}
+                  size="sm"
+                  className="text-xs h-7 px-3"
+                  onClick={() => setStep3Tab("structure")}
+                >
+                  Shareholding &amp; Group
+                </Button>
+                <Button
+                  type="button"
+                  variant={step3Tab === "charges" ? "default" : "ghost"}
+                  size="sm"
+                  className="text-xs h-7 px-3 gap-1"
+                  onClick={() => setStep3Tab("charges")}
+                >
+                  Open Charges &amp; Lenders
+                  {corporateExtractedData?.openCharges && (
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">
+                      {corporateExtractedData.openCharges.length}
+                    </Badge>
+                  )}
+                </Button>
               </div>
             </div>
 
-            <GovernanceStructureStep borrowerId={borrowerId} />
+            {step3Tab === "structure" ? (
+              <GovernanceStructureStep
+                borrowerId={borrowerId}
+                extractedData={corporateExtractedData}
+              />
+            ) : (
+              <ChargesLendersStep
+                borrowerId={borrowerId}
+                extractedData={corporateExtractedData}
+              />
+            )}
 
             <div className="flex items-center justify-between pt-6 border-t">
               <Button
@@ -264,7 +329,7 @@ export default function NewBorrowerPage() {
                 onClick={() => setCurrentStep(2)}
                 className="gap-1.5"
               >
-                <ArrowLeft className="size-4" /> Back to Contacts
+                <ArrowLeft className="size-4" /> Back to Step 2 (Key Contacts)
               </Button>
               <Button
                 type="button"
@@ -281,18 +346,51 @@ export default function NewBorrowerPage() {
         {/* CORPORATE STEP 4: Financials & GST */}
         {isCorporate && currentStep === 4 && borrowerId && (
           <div className="space-y-6">
-            <div className="flex items-center justify-between pb-2 border-b">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 border-b gap-3">
               <div>
                 <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <FileSpreadsheet className="size-5 text-primary" /> Step 4: Financial Appraisal &amp; GST Analytics
+                  <FileSpreadsheet className="size-5 text-primary" /> Step 4: Financials &amp; GST
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Consolidated &amp; standalone statements, Excel extraction, and GST returns reconciliation
+                  Standalone &amp; consolidated statements, EBITDA, ratios, peer benchmarks, and GST reconciliation
                 </p>
+              </div>
+
+              {/* Sub-Tabs for Step 4 */}
+              <div className="flex items-center gap-1 bg-muted p-1 rounded-lg">
+                <Button
+                  type="button"
+                  variant={step4Tab === "financials" ? "default" : "ghost"}
+                  size="sm"
+                  className="text-xs h-7 px-3"
+                  onClick={() => setStep4Tab("financials")}
+                >
+                  Financial Statements &amp; GST
+                </Button>
+                <Button
+                  type="button"
+                  variant={step4Tab === "peers" ? "default" : "ghost"}
+                  size="sm"
+                  className="text-xs h-7 px-3"
+                  onClick={() => setStep4Tab("peers")}
+                >
+                  Peer Comparison
+                </Button>
               </div>
             </div>
 
-            <FinancialsGstStep borrowerId={borrowerId} borrowerType={borrowerType} />
+            {step4Tab === "financials" ? (
+              <FinancialsGstStep
+                borrowerId={borrowerId}
+                borrowerType={borrowerType}
+                extractedData={corporateExtractedData}
+              />
+            ) : (
+              <PeerComparisonStep
+                borrowerId={borrowerId}
+                extractedData={corporateExtractedData}
+              />
+            )}
 
             <div className="flex items-center justify-between pt-6 border-t">
               <Button
@@ -301,7 +399,7 @@ export default function NewBorrowerPage() {
                 onClick={() => setCurrentStep(3)}
                 className="gap-1.5"
               >
-                <ArrowLeft className="size-4" /> Back to Governance
+                <ArrowLeft className="size-4" /> Back to Step 3 (Governance &amp; Structure)
               </Button>
               <Button
                 type="button"
@@ -315,41 +413,25 @@ export default function NewBorrowerPage() {
           </div>
         )}
 
-        {/* CORPORATE STEP 5: KYC Documents & Completion */}
+        {/* CORPORATE STEP 5: KYC & Finalize */}
         {isCorporate && currentStep === 5 && borrowerId && (
           <div className="space-y-6">
             <div className="flex items-center justify-between pb-2 border-b">
               <div>
                 <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <FileCheck className="size-5 text-primary" /> Step 5: KYC &amp; Compliance Verification
+                  <ShieldCheck className="size-5 text-primary" /> Step 5: KYC &amp; Finalize
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Statutory incorporation proofs, PAN, GST certificates, and final onboarding completion
+                  ROC 248(5), BIFR, CDR, Bureau suit-filed checks, EPFO records, and statutory KYC verification
                 </p>
               </div>
             </div>
 
-            <DocumentStageSection
+            <ComplianceFinalizeStep
               borrowerId={borrowerId}
               borrowerType={borrowerType}
-              stage="kyc"
-              title="Corporate KYC &amp; Statutory Documents"
+              extractedData={corporateExtractedData}
             />
-
-            {/* Onboarding Complete Summary Card */}
-            <Card className="border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/20">
-              <CardContent className="flex items-start gap-4 p-4">
-                <CheckCircle2 className="size-6 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">
-                    Corporate Onboarding Complete
-                  </p>
-                  <p className="text-xs text-emerald-700 dark:text-emerald-300">
-                    Company profile, governance, RPT, financials, GST returns, and KYC documents have been successfully initialized. You can now originate loan applications for this entity.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
 
             <div className="flex items-center justify-between pt-6 border-t">
               <Button
@@ -358,7 +440,7 @@ export default function NewBorrowerPage() {
                 onClick={() => setCurrentStep(4)}
                 className="gap-1.5"
               >
-                <ArrowLeft className="size-4" /> Back to Financials
+                <ArrowLeft className="size-4" /> Back to Step 4 (Financials &amp; GST)
               </Button>
               <Button
                 type="button"
@@ -831,7 +913,26 @@ function IndividualFields() {
   );
 }
 
-function CorporateFields() {
+interface CorporateFieldsProps {
+  onExtractedDataChange?: (data: ExtractedCorporateData | null) => void;
+}
+
+function CorporateFields({ onExtractedDataChange }: CorporateFieldsProps) {
+  const [extractedDataState, setExtractedDataState] = useState<ExtractedCorporateData | null>(null);
+  const [legalName, setLegalName] = useState("");
+  const [tradeName, setTradeName] = useState("");
+  const [businessType, setBusinessType] = useState("public");
+  const [isRegistered, setIsRegistered] = useState(true);
+  const [cin, setCin] = useState("");
+  const [pan, setPan] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [incorporationDate, setIncorporationDate] = useState("");
+  const [ownershipType, setOwnershipType] = useState("");
+  const [contactNo, setContactNo] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [landline, setLandline] = useState("");
+  const [extractedJson, setExtractedJson] = useState("");
+
   const [corporateOffice, setCorporateOffice] = useState({
     address: "",
     city: "",
@@ -867,8 +968,141 @@ function CorporateFields() {
     setRegisteredOffice((prev) => ({ ...prev, [field]: value }));
   }
 
+  function handlePdfExtracted(data: ExtractedCorporateData) {
+    setExtractedDataState(data);
+    onExtractedDataChange?.(data);
+
+    if (data.profile.legal_name) setLegalName(data.profile.legal_name);
+    if (data.profile.trade_name) setTradeName(data.profile.trade_name);
+    if (data.profile.business_type) setBusinessType(data.profile.business_type);
+    if (data.profile.cin) setCin(data.profile.cin);
+    if (data.profile.pan) setPan(data.profile.pan);
+    if (data.profile.gstin) setGstin(data.profile.gstin);
+    if (data.profile.incorporation_date) setIncorporationDate(data.profile.incorporation_date);
+    if (data.profile.contact_no) setContactNo(data.profile.contact_no);
+    if (data.profile.contact_email) setContactEmail(data.profile.contact_email);
+
+    if (data.profile.corporate_office_address) {
+      setCorporateOffice({
+        address: data.profile.corporate_office_address || "",
+        city: data.profile.corporate_office_city || "",
+        state: data.profile.corporate_office_state || "",
+        pincode: data.profile.corporate_office_pincode || "",
+      });
+    }
+
+    if (data.profile.registered_office_address) {
+      setRegisteredOffice({
+        address: data.profile.registered_office_address || "",
+        city: data.profile.registered_office_city || "",
+        state: data.profile.registered_office_state || "",
+        pincode: data.profile.registered_office_pincode || "",
+      });
+    }
+
+    setExtractedJson(JSON.stringify(data));
+  }
+
+  function handleClearForm() {
+    setExtractedDataState(null);
+    onExtractedDataChange?.(null);
+    setLegalName("");
+    setTradeName("");
+    setBusinessType("public");
+    setIsRegistered(true);
+    setCin("");
+    setPan("");
+    setGstin("");
+    setIncorporationDate("");
+    setOwnershipType("");
+    setContactNo("");
+    setContactEmail("");
+    setLandline("");
+    setCorporateOffice({ address: "", city: "", state: "", pincode: "" });
+    setRegisteredOffice({ address: "", city: "", state: "", pincode: "" });
+    setSameAsCorporate(false);
+    setExtractedJson("");
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* Quick Ingest Panel with PDF & Excel options and Erase Data */}
+      <CorporateDataUploader
+        onPdfExtracted={handlePdfExtracted}
+        onClearForm={handleClearForm}
+      />
+
+      {/* Extracted Highlights Card */}
+      {extractedDataState?.highlights && (
+        <Card className="border-blue-500/20 bg-blue-50/10 dark:bg-blue-950/10">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Building2 className="size-4 text-blue-600 dark:text-blue-400" />
+                Company Regulatory Highlights &amp; Capital Structure
+              </span>
+              <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/30">
+                Official MCA / Regulatory Data
+              </Badge>
+            </CardTitle>
+            {extractedDataState.profile.about && (
+              <CardDescription className="text-xs text-foreground/80 mt-1 leading-relaxed">
+                {extractedDataState.profile.about}
+              </CardDescription>
+            )}
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Authorized Capital</span>
+                <span className="font-bold text-foreground text-sm">
+                  {extractedDataState.highlights.authorized_capital || "—"}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Paid-Up Capital</span>
+                <span className="font-bold text-foreground text-sm">
+                  {extractedDataState.highlights.paid_up_capital || "—"}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Sum of Open Charges</span>
+                <span className="font-bold text-foreground text-sm">
+                  {extractedDataState.highlights.sum_of_charges || "—"}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Listing Status</span>
+                <span className="font-bold text-foreground text-sm">
+                  {extractedDataState.highlights.listing_status || "—"}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Compliance Status</span>
+                <span className="font-bold text-emerald-600 text-sm">
+                  {extractedDataState.highlights.active_compliance || "ACTIVE"}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Last AGM Date</span>
+                <span className="font-bold text-foreground text-sm">
+                  {extractedDataState.highlights.last_agm_date || "—"}
+                </span>
+              </div>
+              <div className="col-span-2 p-2.5 rounded-lg border bg-background">
+                <span className="text-muted-foreground block text-[11px]">Legal Entity Identifier (LEI)</span>
+                <span className="font-mono font-bold text-foreground text-xs">
+                  {extractedDataState.highlights.lei || "—"}
+                </span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Hidden input to pass extracted associates & financials to createBorrower */}
+      <input type="hidden" name="extracted_json" value={extractedJson} />
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Company Identification</CardTitle>
@@ -876,16 +1110,28 @@ function CorporateFields() {
         <CardContent className="space-y-4">
           <Field>
             <Label htmlFor="legal_name">Legal Name *</Label>
-            <Input id="legal_name" name="legal_name" placeholder="Registered Company Name" required />
+            <Input
+              id="legal_name"
+              name="legal_name"
+              placeholder="Registered Company Name"
+              value={legalName}
+              onChange={(e) => setLegalName(e.target.value)}
+              required
+            />
           </Field>
           <Field>
             <Label htmlFor="trade_name">Trade / Brand Name</Label>
-            <Input id="trade_name" name="trade_name" />
+            <Input
+              id="trade_name"
+              name="trade_name"
+              value={tradeName}
+              onChange={(e) => setTradeName(e.target.value)}
+            />
           </Field>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field>
               <Label htmlFor="business_type">Business Structure</Label>
-              <Select name="business_type">
+              <Select name="business_type" value={businessType} onValueChange={(v) => v && setBusinessType(v)}>
                 <SelectTrigger id="business_type" className="w-full">
                   <SelectValue placeholder="Select" />
                 </SelectTrigger>
@@ -900,7 +1146,13 @@ function CorporateFields() {
             </Field>
             <Field>
               <Label className="flex items-center gap-2 pt-7 text-sm font-normal cursor-pointer">
-                <input type="checkbox" name="is_registered" className="size-4 rounded" />
+                <input
+                  type="checkbox"
+                  name="is_registered"
+                  className="size-4 rounded"
+                  checked={isRegistered}
+                  onChange={(e) => setIsRegistered(e.target.checked)}
+                />
                 Officially Registered Entity
               </Label>
             </Field>
@@ -908,25 +1160,55 @@ function CorporateFields() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <Field>
               <Label htmlFor="cin">CIN / LLPIN / Reg. No.</Label>
-              <Input id="cin" name="cin" placeholder="U12345MH2020PTC123456" />
+              <Input
+                id="cin"
+                name="cin"
+                placeholder="U12345MH2020PTC123456"
+                value={cin}
+                onChange={(e) => setCin(e.target.value)}
+              />
             </Field>
             <Field>
               <Label htmlFor="pan">Company PAN</Label>
-              <Input id="pan" name="pan" placeholder="AAACB1234C" />
+              <Input
+                id="pan"
+                name="pan"
+                placeholder="AAACB1234C"
+                value={pan}
+                onChange={(e) => setPan(e.target.value)}
+              />
             </Field>
             <Field>
               <Label htmlFor="gstin">GSTIN</Label>
-              <Input id="gstin" name="gstin" placeholder="27AAACB1234C1Z5" />
+              <Input
+                id="gstin"
+                name="gstin"
+                placeholder="27AAACB1234C1Z5"
+                value={gstin}
+                onChange={(e) => setGstin(e.target.value)}
+              />
             </Field>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field>
               <Label htmlFor="incorporation_date">Date of Incorporation</Label>
-              <Input id="incorporation_date" name="incorporation_date" type="date" />
+              <Input
+                id="incorporation_date"
+                name="incorporation_date"
+                type="date"
+                value={incorporationDate}
+                onChange={(e) => setIncorporationDate(e.target.value)}
+              />
             </Field>
             <Field>
               <Label htmlFor="ownership_type">Ownership Structure</Label>
-              <Input id="ownership_type" name="ownership_type" placeholder="e.g. Domestic / Subsidiary" />
+              <Input
+                id="ownership_type"
+                name="ownership_type"
+                placeholder="e.g. Domestic / Subsidiary"
+                value={ownershipType}
+                onChange={(e) => setOwnershipType(e.target.value)}
+              />
             </Field>
           </div>
         </CardContent>
@@ -939,15 +1221,33 @@ function CorporateFields() {
         <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Field>
             <Label htmlFor="contact_no">Primary Phone</Label>
-            <Input id="contact_no" name="contact_no" placeholder="+91 9876543210" />
+            <Input
+              id="contact_no"
+              name="contact_no"
+              placeholder="+91 9876543210"
+              value={contactNo}
+              onChange={(e) => setContactNo(e.target.value)}
+            />
           </Field>
           <Field>
             <Label htmlFor="contact_email">Official Email</Label>
-            <Input id="contact_email" name="contact_email" type="email" placeholder="contact@company.com" />
+            <Input
+              id="contact_email"
+              name="contact_email"
+              type="email"
+              placeholder="contact@company.com"
+              value={contactEmail}
+              onChange={(e) => setContactEmail(e.target.value)}
+            />
           </Field>
           <Field>
             <Label htmlFor="landline">Landline</Label>
-            <Input id="landline" name="landline" />
+            <Input
+              id="landline"
+              name="landline"
+              value={landline}
+              onChange={(e) => setLandline(e.target.value)}
+            />
           </Field>
         </CardContent>
       </Card>

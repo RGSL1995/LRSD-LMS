@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { unwrapRelation } from "@/lib/utils";
 import { BorrowerDetailView } from "./borrower-detail-view";
+import { getLatestCorporateReport } from "@/app/borrowers/corporate-ingest-actions";
+import { getBorrowerAvatarUrl } from "@/app/borrowers/avatar-actions";
 
 export default async function BorrowerDetailPage({
   params,
@@ -28,12 +30,21 @@ export default async function BorrowerDetailPage({
   const corporate = unwrapRelation(borrower.corporate_profiles);
   const other = unwrapRelation(borrower.other_profiles);
 
+  const [initialExtractedData, initialAvatarUrl] = await Promise.all([
+    borrower.borrower_type === "corporate"
+      ? getLatestCorporateReport(borrower.id)
+      : Promise.resolve(null),
+    getBorrowerAvatarUrl(borrower.id),
+  ]);
+
   return (
     <BorrowerDetailView
       borrower={borrower}
       individual={individual}
       corporate={corporate}
       other={other}
+      initialExtractedData={initialExtractedData}
+      initialAvatarUrl={initialAvatarUrl}
     />
   );
 }

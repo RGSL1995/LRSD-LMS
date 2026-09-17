@@ -135,6 +135,162 @@ export async function createBorrower(
     });
 
     if (error) return { error: error.message, borrowerId: null };
+
+    // Ingest any additional extracted records from PDF if available
+    const extractedRaw = formData.get("extracted_json") as string | null;
+    if (extractedRaw) {
+      try {
+        const extracted = JSON.parse(extractedRaw);
+        // Financials
+        if (Array.isArray(extracted.financials) && extracted.financials.length > 0) {
+          const finRows = extracted.financials.map((s: { statementType: string; financialYearEnding: string; fields: Record<string, number | null> }) => ({
+            borrower_id: borrower.id,
+            statement_type: s.statementType,
+            financial_year_ending: s.financialYearEnding,
+            created_by: user.id,
+            ...s.fields,
+          }));
+          await supabase.from("corporate_financials").upsert(finRows, { onConflict: "borrower_id,statement_type,financial_year_ending" });
+        }
+        // Associates / Directors
+        if (Array.isArray(extracted.associates) && extracted.associates.length > 0) {
+          const assocRows = extracted.associates.map((a: { full_name: string; din?: string; associate_role: string; shareholding_percent?: number }) => ({
+            borrower_id: borrower.id,
+            associate_role: a.associate_role,
+            full_name: a.full_name,
+            din: a.din || null,
+            shareholding_percent: a.shareholding_percent ?? null,
+          }));
+          await supabase.from("corporate_associates").insert(assocRows);
+        }
+        // Group Structure
+        if (Array.isArray(extracted.groupStructure) && extracted.groupStructure.length > 0) {
+          const subRows = extracted.groupStructure.map((sub: { entity_name: string; relationship_type: string; percentage_holding?: number; cin_or_registration?: string }) => ({
+            borrower_id: borrower.id,
+            entity_name: sub.entity_name,
+            relationship_type: sub.relationship_type,
+            percentage_holding: sub.percentage_holding ?? null,
+            cin_or_registration: sub.cin_or_registration ?? null,
+          }));
+          await supabase.from("corporate_group_structure").insert(subRows);
+        }
+        // Related Party Transactions (RPT)
+        if (Array.isArray(extracted.rpt) && extracted.rpt.length > 0) {
+          const rptRows = extracted.rpt.map((item: { partyName: string; category: string; relationship: string; transactionType: string; amountCrore: number | null; amountInr: number; financialYear: string; isMaterial: boolean }) => {
+            let txType: "loan_given" | "loan_taken" | "sales_of_goods_services" | "purchase_of_goods_services" | "corporate_guarantee" | "director_remuneration" | "advances_given" | "advances_received" | "other" = "other";
+            const typeLower = (item.transactionType || "").toLowerCase();
+            const relLower = (item.relationship || "").toLowerCase();
+            if (typeLower.includes("revenue") || typeLower.includes("sales")) {
+              txType = "sales_of_goods_services";
+            } else if (typeLower.includes("expense") || typeLower.includes("purchase")) {
+              if (item.category === "individual" || relLower.includes("key management") || relLower.includes("personnel") || relLower.includes("director")) {
+                txType = "director_remuneration";
+              } else {
+                txType = "purchase_of_goods_services";
+              }
+            } else if (typeLower.includes("loan given")) {
+              txType = "loan_given";
+            } else if (typeLower.includes("loan taken")) {
+              txType = "loan_taken";
+            } else if (typeLower.includes("advance given")) {
+              txType = "advances_given";
+            } else if (typeLower.includes("advance received")) {
+              txType = "advances_received";
+            } else if (typeLower.includes("guarantee")) {
+              txType = "corporate_guarantee";
+            }
+
+            const desc = item.amountCrore !== null
+              ? `₹${item.amountCrore} Cr (${item.transactionType}) from MCA / Corporate report`
+              : `Amount undisclosed (****) in MCA / Corporate report`;
+
+            return {
+              borrower_id: borrower.id,
+              related_party_name: item.partyName,
+              relationship_nature: item.relationship,
+              transaction_type: txType,
+              amount: item.amountInr || 0,
+              financial_year: item.financialYear || "FY 2024-25",
+              description: desc,
+              is_material: Boolean(item.isMaterial),
+            };
+          });
+          const { error: rptErr } = await supabase.from("related_party_transactions").insert(rptRows);
+          if (rptErr) {
+            console.error("Error inserting related_party_transactions during createBorrower:", rptErr);
+          }
+        }
+        // GST Records
+        if (Array.isArray(extracted.gstins) && extracted.gstins.length > 0) {
+          const monthsMap: Record<string, string> = {
+            jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+            jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+          };
+          const gstRows: Array<{
+            borrower_id: string;
+            gstin: string;
+            financial_year: string;
+            return_type: "gstr_1" | "gstr_3b" | "gstr_9" | "annual_aggregate";
+            period_month: string;
+            taxable_turnover: number;
+            igst_amount: number;
+            cgst_amount: number;
+            sgst_amount: number;
+            total_tax_paid: number;
+            filing_date: string | null;
+          }> = [];
+
+          for (const g of extracted.gstins) {
+            if (!Array.isArray(g.filings)) continue;
+            for (const f of g.filings) {
+              let returnType: "gstr_1" | "gstr_3b" | "gstr_9" | "annual_aggregate" = "gstr_3b";
+              const rUpper = (f.returnType || "").toUpperCase();
+              if (rUpper.includes("GSTR1") || rUpper.includes("GSTR-1")) {
+                returnType = "gstr_1";
+              } else if (rUpper.includes("GSTR3B") || rUpper.includes("GSTR-3B")) {
+                returnType = "gstr_3b";
+              } else if (rUpper.includes("GSTR9") || rUpper.includes("GSTR-9")) {
+                returnType = "gstr_9";
+              }
+
+              let parsedFilingDate: string | null = null;
+              if (f.filingDate) {
+                const dm = f.filingDate.match(/(\d{1,2})\s+([A-Za-z]{3}),?\s+(\d{4})/);
+                if (dm) {
+                  const day = dm[1].padStart(2, "0");
+                  const month = monthsMap[dm[2].toLowerCase()] || "01";
+                  parsedFilingDate = `${dm[3]}-${month}-${day}`;
+                }
+              }
+
+              gstRows.push({
+                borrower_id: borrower.id,
+                gstin: g.gstin,
+                financial_year: f.financialYear,
+                return_type: returnType,
+                period_month: f.taxPeriod,
+                taxable_turnover: 0,
+                igst_amount: 0,
+                cgst_amount: 0,
+                sgst_amount: 0,
+                total_tax_paid: 0,
+                filing_date: parsedFilingDate,
+              });
+            }
+          }
+          if (gstRows.length > 0) {
+            for (let i = 0; i < gstRows.length; i += 100) {
+              const { error: gstErr } = await supabase.from("corporate_gst_records").insert(gstRows.slice(i, i + 100));
+              if (gstErr) {
+                console.error("Error inserting corporate_gst_records batch during createBorrower:", gstErr);
+              }
+            }
+          }
+        }
+      } catch (parseErr) {
+        console.warn("Failed to parse extracted_json during createBorrower:", parseErr);
+      }
+    }
   } else {
     const entityName = formData.get("entity_name") as string;
     if (!entityName) {

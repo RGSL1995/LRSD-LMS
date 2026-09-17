@@ -1,38 +1,10 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { NavBar } from "@/components/layout/nav-bar";
-import { PageHeader } from "@/components/layout/page-header";
 import { buttonVariants } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { cn, unwrapRelation, type Relation } from "@/lib/utils";
-
-type EmbeddedBorrower = {
-  individual_profiles: Relation<{ full_name: string }>;
-  corporate_profiles: Relation<{ legal_name: string }>;
-  other_profiles: Relation<{ entity_name: string }>;
-};
-
-function displayName(borrowers: Relation<EmbeddedBorrower>) {
-  const borrower = unwrapRelation<EmbeddedBorrower>(borrowers);
-  if (!borrower) return "—";
-  const ind = unwrapRelation<{ full_name: string }>(borrower.individual_profiles);
-  const corp = unwrapRelation<{ legal_name: string }>(borrower.corporate_profiles);
-  const oth = unwrapRelation<{ entity_name: string }>(borrower.other_profiles);
-  return (
-    ind?.full_name ??
-    corp?.legal_name ??
-    oth?.entity_name ??
-    "—"
-  );
-}
+import { LoansTable, type LoanRow } from "./loans-table";
+import { cn } from "@/lib/utils";
+import { PlusCircle, ArrowLeft } from "lucide-react";
 
 export default async function LoanApplicationsPage() {
   const supabase = await createClient();
@@ -40,8 +12,9 @@ export default async function LoanApplicationsPage() {
   const { data: applications, error } = await supabase
     .from("loan_applications")
     .select(
-      `id, application_code, requested_amount, status, created_at,
+      `*,
        borrowers (
+         borrower_type,
          individual_profiles ( full_name ),
          corporate_profiles ( legal_name ),
          other_profiles ( entity_name )
@@ -52,60 +25,50 @@ export default async function LoanApplicationsPage() {
   return (
     <div className="min-h-screen bg-background">
       <NavBar />
-      <main className="mx-auto max-w-6xl p-6">
-        <PageHeader
-          title="Loan Applications"
-          description="Origination pipeline"
-          actions={
-            <Link href="/loans/new" className={cn(buttonVariants())}>
-              + New origination
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 py-8 space-y-6">
+        {/* Page Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-border/70">
+          <div>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/dashboard"
+                className="text-xs font-semibold text-muted-foreground hover:text-foreground inline-flex items-center gap-1 transition-colors"
+              >
+                <ArrowLeft className="size-3" /> Dashboard
+              </Link>
+              <span className="text-muted-foreground/40">&middot;</span>
+              <span className="text-xs font-semibold text-primary">Originations</span>
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground mt-1">
+              Loan Applications Pipeline
+            </h1>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+              Track multi-stage credit underwriting, credit committee approvals, and disbursement status.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link
+              href="/loans/new"
+              className={cn(
+                buttonVariants({ size: "sm" }),
+                "gap-1.5 h-9 text-xs font-semibold shadow-xs",
+              )}
+            >
+              <PlusCircle className="size-3.5" />
+              <span>New Origination</span>
             </Link>
-          }
-        />
+          </div>
+        </div>
 
-        {error && <p className="text-sm text-destructive">{error.message}</p>}
-
-        {applications && applications.length === 0 && (
-          <p className="text-sm text-muted-foreground">No loan applications yet.</p>
-        )}
-
-        {applications && applications.length > 0 && (
-          <div className="rounded-lg border bg-card">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Application #</TableHead>
-                  <TableHead>Borrower</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {applications.map((application) => (
-                  <TableRow key={application.id}>
-                    <TableCell>
-                      <Link
-                        href={`/loans/${application.id}`}
-                        className="font-mono text-xs font-medium hover:underline"
-                      >
-                        {application.application_code}
-                      </Link>
-                    </TableCell>
-                    <TableCell>{displayName(application.borrowers)}</TableCell>
-                    <TableCell>
-                      {Number(application.requested_amount).toLocaleString()}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="capitalize">
-                        {application.status.replace("_", " ")}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+        {error && (
+          <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive font-medium">
+            {error.message}
           </div>
         )}
+
+        {/* Loans Table */}
+        <LoansTable loans={(applications as unknown as LoanRow[]) || []} />
       </main>
     </div>
   );

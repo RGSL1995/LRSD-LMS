@@ -26,75 +26,63 @@ export function WizardStepper({
   className,
 }: WizardStepperProps) {
   return (
-    <nav aria-label="Progress" className={cn("w-full py-4", className)}>
-      <ol className="flex items-center justify-between w-full max-w-3xl mx-auto px-4">
+    <nav aria-label="Progress" className={cn("w-full py-4 sm:py-6", className)}>
+      <ol className="flex items-start justify-between w-full max-w-4xl mx-auto px-2 sm:px-6">
         {steps.map((step, idx) => {
           const isCompleted = step.id < currentStep;
           const isActive = step.id === currentStep;
           const isUpcoming = step.id > currentStep;
           const isClickable = onStepClick && step.id <= maxAccessibleStep && !isActive;
 
-          // Line status between step[idx] and step[idx+1]
           const nextStep = steps[idx + 1];
-          let lineClass = "bg-slate-200 dark:bg-slate-700";
-          if (nextStep) {
-            if (nextStep.id <= currentStep) {
-              if (nextStep.id === currentStep) {
-                // Line leading into the active step
-                lineClass = "bg-blue-400 dark:bg-blue-500";
-              } else {
-                // Line between completed steps
-                lineClass = "bg-emerald-500 dark:bg-emerald-500";
-              }
-            }
-          }
+          const isNextCompletedOrActive = nextStep && nextStep.id <= currentStep;
 
           return (
             <React.Fragment key={step.id}>
-              {/* Step circle + label container */}
-              <li className="relative flex flex-col items-center group">
+              {/* Step Circle & Text */}
+              <li className="relative flex flex-col items-center flex-shrink-0">
                 <button
                   type="button"
                   disabled={!isClickable}
                   onClick={() => isClickable && onStepClick(step.id)}
                   className={cn(
                     "flex flex-col items-center focus:outline-none transition-all duration-200",
-                    isClickable ? "cursor-pointer" : "cursor-default",
+                    isClickable ? "cursor-pointer hover:opacity-90" : "cursor-default",
                   )}
                 >
-                  {/* Circle Badge */}
+                  {/* Circle Badge matching user's exact design */}
                   <div
                     className={cn(
-                      "size-12 rounded-full flex items-center justify-center font-semibold text-sm transition-all duration-200 shadow-sm",
-                      isCompleted &&
-                        "bg-emerald-500 text-white shadow-emerald-500/20 hover:brightness-105 ring-4 ring-emerald-100 dark:ring-emerald-950/50",
+                      "size-11 sm:size-13 md:size-14 rounded-full flex items-center justify-center font-bold text-sm sm:text-base md:text-lg transition-all duration-200 select-none",
                       isActive &&
-                        "bg-blue-400 dark:bg-blue-500 text-white shadow-blue-500/25 ring-4 ring-blue-100 dark:ring-blue-950/60 scale-105",
+                        "bg-[#3B82F6] text-white ring-[8px] sm:ring-[10px] ring-blue-100 dark:ring-blue-900/40 shadow-xs",
+                      isCompleted &&
+                        "bg-[#3B82F6] text-white hover:brightness-105 shadow-xs",
                       isUpcoming &&
-                        "bg-slate-400 dark:bg-slate-600 text-white/90",
+                        "bg-[#8598AF] dark:bg-slate-600 text-white shadow-xs",
                     )}
                   >
                     {isCompleted ? (
-                      <Check className="size-6 stroke-[3]" />
+                      <Check className="size-4 sm:size-5 md:size-6 stroke-[2.8]" />
                     ) : (
                       <span>{step.id}</span>
                     )}
                   </div>
 
-                  {/* Text Labels */}
-                  <div className="mt-2 text-center">
+                  {/* Text Labels below circle */}
+                  <div className="mt-2.5 sm:mt-3 text-center min-w-[70px] sm:min-w-[90px] max-w-[130px]">
                     <span
                       className={cn(
-                        "text-xs md:text-sm font-semibold block transition-colors duration-200",
-                        isCompleted && "text-emerald-600 dark:text-emerald-400",
-                        isActive && "text-blue-500 dark:text-blue-400 font-bold",
-                        isUpcoming && "text-slate-500 dark:text-slate-400",
+                        "text-xs sm:text-sm md:text-[15px] font-bold block transition-colors duration-200 leading-tight",
+                        isActive && "text-[#2563EB] dark:text-blue-400",
+                        isCompleted && "text-[#2563EB] dark:text-blue-400",
+                        isUpcoming && "text-[#486581] dark:text-slate-300",
                       )}
                     >
                       {step.title}
                     </span>
                     {step.description && (
-                      <span className="hidden sm:block text-[11px] text-muted-foreground mt-0.5">
+                      <span className="text-[11px] sm:text-xs md:text-[13px] text-[#556980] dark:text-slate-400 font-medium block mt-0.5 sm:mt-1 leading-snug">
                         {step.description}
                       </span>
                     )}
@@ -102,16 +90,18 @@ export function WizardStepper({
                 </button>
               </li>
 
-              {/* Connecting Line between steps */}
+              {/* Connecting Line between steps - vertically centered with circle */}
               {idx < steps.length - 1 && (
                 <li
                   aria-hidden="true"
-                  className="flex-1 px-2 md:px-4 mb-6"
+                  className="flex-1 flex items-center justify-center px-1.5 sm:px-3 md:px-4 mt-5 sm:mt-6 md:mt-[26px]"
                 >
                   <div
                     className={cn(
-                      "h-1 w-full rounded-full transition-colors duration-300",
-                      lineClass,
+                      "h-[3px] sm:h-[3.5px] w-full max-w-[50px] sm:max-w-[70px] rounded-full transition-colors duration-300",
+                      isNextCompletedOrActive
+                        ? "bg-[#3B82F6] dark:bg-blue-500"
+                        : "bg-[#DCE4EE] dark:bg-slate-700",
                     )}
                   />
                 </li>
