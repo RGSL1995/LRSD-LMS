@@ -449,99 +449,114 @@ export function RiskMonitorClient({
 
   return (
     <div className="space-y-6">
-      {/* Top Banner with Actions */}
-      <div className="flex flex-col gap-4 rounded-xl border bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 p-5 text-white shadow-md sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-xs font-bold uppercase tracking-wider bg-white/10 px-2.5 py-0.5 rounded border border-white/20">
-              EQUITY RISK ENGINE
-            </span>
-            <span className="text-xs bg-indigo-500/20 text-indigo-200 px-2.5 py-0.5 rounded border border-indigo-400/30 font-medium">
-              Live Cover & Shortfall Monitoring
-            </span>
+      {/* TOP INSTITUTIONAL HERO HEADER */}
+      <div className="relative overflow-hidden rounded-2xl border border-border/80 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))] pointer-events-none" />
+        <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[10px] font-extrabold uppercase tracking-widest bg-white/10 text-slate-200 px-2.5 py-1 rounded-md border border-white/15">
+                LAS RISK MONITORING
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-[11px] bg-emerald-500/20 text-emerald-300 px-2.5 py-0.5 rounded-full border border-emerald-500/30 font-medium">
+                <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
+                Live Real-Time MTM Feeds
+              </span>
+            </div>
+            <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">
+              Loan Against Securities (LAS) Monitor
+            </h1>
+            <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+              Real-time portfolio collateral tracking, live stock valuations (CMP vs Disbursement Price), security cover multiples (**X), and instant margin call shortfall alerts.
+            </p>
           </div>
-          <h2 className="text-xl font-bold tracking-tight text-white">LAS Pledged Shares Risk Monitor</h2>
-          <p className="text-xs text-slate-300 max-w-2xl">
-            Track pledged share volumes, price-at-disbursement vs live CMP, percentage above/below disbursement price, required security cover (**X), and automated margin call shortfall triggers.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-          <Button
-            onClick={() => setIsAddModalOpen(true)}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white h-9 gap-1.5 text-xs font-semibold shadow-sm"
-          >
-            <Plus className="size-4" />
-            + Add LAS Position
-          </Button>
-          <Button
-            variant="outline"
-            onClick={handleLiveRefreshAll}
-            disabled={isPending}
-            className="bg-white/10 hover:bg-white/20 text-white border-white/20 h-9 gap-1.5 text-xs font-medium"
-          >
-            <RefreshCw className={`size-3.5 ${isPending ? "animate-spin" : ""}`} />
-            {isPending ? "Fetching Quotes…" : "Refresh Live Quotes"}
-          </Button>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <Button
+              onClick={() => setIsAddModalOpen(true)}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white h-10 px-4 gap-2 text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all hover:scale-[1.02]"
+            >
+              <Plus className="size-4" />
+              + Add LAS Position
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleLiveRefreshAll}
+              disabled={isPending}
+              className="bg-white/10 hover:bg-white/20 text-white border-white/20 h-10 px-3.5 gap-2 text-xs font-semibold backdrop-blur-sm"
+            >
+              <RefreshCw className={`size-3.5 ${isPending ? "animate-spin text-indigo-400" : "text-slate-300"}`} />
+              {isPending ? "Syncing Market Feeds…" : "Sync Live Quotes"}
+            </Button>
+          </div>
         </div>
       </div>
 
       {/* Feedback / Alert Notice */}
       {(error || feedback) && (
         <div
-          className={`rounded-lg border p-3 text-xs flex items-center justify-between gap-2 animate-in fade-in ${
-            error ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          className={`rounded-xl border p-3.5 text-xs flex items-center justify-between gap-3 shadow-xs animate-in fade-in ${
+            error
+              ? "border-destructive/40 bg-destructive/10 text-destructive dark:text-red-300"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
           }`}
         >
-          <div className="flex items-center gap-2">
-            {error ? <AlertTriangle className="size-4 shrink-0" /> : <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />}
-            <span>{error || feedback}</span>
+          <div className="flex items-center gap-2.5">
+            {error ? <AlertTriangle className="size-4.5 shrink-0" /> : <CheckCircle2 className="size-4.5 shrink-0 text-emerald-500" />}
+            <span className="font-medium">{error || feedback}</span>
           </div>
-          <button type="button" onClick={() => setFeedback("")} className="text-xs opacity-70 hover:opacity-100">✕</button>
+          <button type="button" onClick={() => setFeedback("")} className="text-xs opacity-70 hover:opacity-100 p-1">✕</button>
         </div>
       )}
 
-      {/* 4 Summary Key Metric Cards */}
+      {/* 4 EXECUTIVE KPI METRIC CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Pledged Market Value */}
-        <Card className="shadow-xs border bg-card">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
-            <span className="text-xs font-medium">Total Pledged Market Value</span>
-            <Layers className="size-4 text-primary" />
+        <Card className="shadow-xs border-l-4 border-l-indigo-600 bg-card hover:shadow-md transition-shadow">
+          <CardHeader className="pb-1.5 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Total Pledged Collateral</span>
+            <div className="p-1.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
+              <Layers className="size-4" />
+            </div>
           </CardHeader>
           <CardContent className="space-y-1">
-            <div className="text-xl font-bold font-mono tracking-tight text-foreground">
+            <div className="text-2xl font-black font-mono tracking-tight text-foreground">
               ₹{formatINR(totalManualMarketValue, 0)}
             </div>
-            <div className="text-[11px] text-muted-foreground">
-              Across <strong>{manualPositions.length}</strong> monitored position(s)
+            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+              <span>Across <strong className="text-foreground">{manualPositions.length}</strong> monitored position(s)</span>
             </div>
           </CardContent>
         </Card>
 
         {/* Card 2: Disbursed Loan Exposure */}
-        <Card className="shadow-xs border bg-card">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
-            <span className="text-xs font-medium">Total Disbursed Exposure</span>
-            <Activity className="size-4 text-indigo-600" />
+        <Card className="shadow-xs border-l-4 border-l-blue-600 bg-card hover:shadow-md transition-shadow">
+          <CardHeader className="pb-1.5 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Active Loan Exposure</span>
+            <div className="p-1.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400">
+              <Activity className="size-4" />
+            </div>
           </CardHeader>
           <CardContent className="space-y-1">
-            <div className="text-xl font-bold font-mono tracking-tight text-indigo-600 dark:text-indigo-400">
+            <div className="text-2xl font-black font-mono tracking-tight text-blue-600 dark:text-blue-400">
               ₹{formatINR(totalManualDisbursed, 0)}
             </div>
             <div className="text-[11px] text-muted-foreground">
-              Aggregate active loan principal
+              Aggregate disbursed principal
             </div>
           </CardContent>
         </Card>
 
         {/* Card 3: Aggregate Security Cover (**X) */}
-        <Card className="shadow-xs border bg-card">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
-            <span className="text-xs font-medium">Weighted Security Cover</span>
-            <ShieldCheck className={`size-4 ${overallCover < 1.75 ? "text-destructive" : overallCover < 2.0 ? "text-amber-500" : "text-emerald-600"}`} />
+        <Card className={`shadow-xs border-l-4 bg-card hover:shadow-md transition-shadow ${overallCover < 1.75 ? "border-l-red-600" : overallCover < 2.5 ? "border-l-amber-500" : "border-l-emerald-600"}`}>
+          <CardHeader className="pb-1.5 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Portfolio Security Cover</span>
+            <div className={`p-1.5 rounded-md ${overallCover < 1.75 ? "bg-red-50 text-red-600 dark:bg-red-950/50" : overallCover < 2.5 ? "bg-amber-50 text-amber-600 dark:bg-amber-950/50" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50"}`}>
+              <ShieldCheck className="size-4" />
+            </div>
           </CardHeader>
           <CardContent className="space-y-1">
-            <div className={`text-xl font-bold font-mono tracking-tight ${overallCover < 1.75 ? "text-destructive" : overallCover < 2.0 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+            <div className={`text-2xl font-black font-mono tracking-tight ${overallCover < 1.75 ? "text-destructive" : overallCover < 2.5 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
               {overallCover > 0 ? `${overallCover.toFixed(2)}x` : "—"}
             </div>
             <div className="text-[11px] text-muted-foreground">
@@ -551,20 +566,22 @@ export function RiskMonitorClient({
         </Card>
 
         {/* Card 4: Margin Shortfall & Action Required */}
-        <Card className="shadow-xs border bg-card">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
-            <span className="text-xs font-medium">Margin Shortfall / Top-up</span>
-            <AlertTriangle className={`size-4 ${totalManualShortfall > 0 ? "text-destructive" : "text-muted-foreground"}`} />
+        <Card className={`shadow-xs border-l-4 bg-card hover:shadow-md transition-shadow ${totalManualShortfall > 0 ? "border-l-red-600" : "border-l-slate-400"}`}>
+          <CardHeader className="pb-1.5 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Margin Shortfall</span>
+            <div className={`p-1.5 rounded-md ${totalManualShortfall > 0 ? "bg-red-50 text-red-600 dark:bg-red-950/50" : "bg-muted text-muted-foreground"}`}>
+              <AlertTriangle className="size-4" />
+            </div>
           </CardHeader>
           <CardContent className="space-y-1">
-            <div className={`text-xl font-bold font-mono tracking-tight ${totalManualShortfall > 0 ? "text-destructive" : "text-foreground"}`}>
-              ₹{formatINR(totalManualShortfall, 0)}
+            <div className={`text-2xl font-black font-mono tracking-tight ${totalManualShortfall > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400"}`}>
+              {totalManualShortfall > 0 ? `₹${formatINR(totalManualShortfall, 0)}` : "₹0 (Nil)"}
             </div>
             <div className="text-[11px] text-muted-foreground">
               {totalManualMarginCalls > 0 ? (
-                <span className="text-red-600 dark:text-red-400 font-semibold">{totalManualMarginCalls} position(s) breached cover</span>
+                <span className="text-red-600 dark:text-red-400 font-bold">{totalManualMarginCalls} position(s) require top-up</span>
               ) : (
-                "All positions adequately covered"
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">All positions fully covered</span>
               )}
             </div>
           </CardContent>
@@ -572,12 +589,12 @@ export function RiskMonitorClient({
       </div>
 
       {/* Main Table Card */}
-      <Card className="shadow-xs border">
-        <CardHeader className="p-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-muted/20">
+      <Card className="shadow-sm border rounded-xl overflow-hidden">
+        <CardHeader className="p-4 sm:p-5 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-muted/20">
           <div>
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <ShieldAlert className="size-4 text-indigo-600" />
-              Manual LAS Positions & Real-Time Risk Monitor
+            <CardTitle className="text-sm font-bold flex items-center gap-2 text-foreground">
+              <ShieldAlert className="size-4 text-indigo-600 dark:text-indigo-400" />
+              Pledged Shares & Real-Time LAS Monitor
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
               Live tracking of Pledged Shares, Price @ Disbursement, % vs Disb Price, Security Cover (**X), and Security Required.
@@ -586,19 +603,19 @@ export function RiskMonitorClient({
 
           {/* Search & Filter Bar */}
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative w-48 sm:w-56">
+            <div className="relative w-56 sm:w-64">
               <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
               <Input
-                placeholder="Search stock, borrower, ISIN..."
+                placeholder="Search borrower, symbol, ISIN..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="h-8 pl-8 text-xs"
+                className="h-8 pl-8 text-xs bg-background"
               />
             </div>
             <select
               value={filter}
               onChange={(e) => setFilter(e.target.value as Filter)}
-              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-medium"
+              className="h-8 rounded-md border border-input bg-background px-3 text-xs font-medium focus:ring-1 focus:ring-indigo-500"
             >
               <option value="all">All Positions ({manualPositions.length})</option>
               <option value="critical">Critical (&le;1.50x / Fall &gt;35%)</option>
@@ -612,24 +629,24 @@ export function RiskMonitorClient({
 
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left border-collapse min-w-[1050px]">
+            <table className="w-full text-xs text-left border-collapse min-w-[1100px]">
               <thead>
-                <tr className="bg-muted/70 border-b border-border text-[11px] font-bold text-foreground">
-                  <th className="p-3 border-r min-w-48 font-bold">Borrower & Loan Facility</th>
-                  <th className="p-3 border-r min-w-40">Pledged Security</th>
-                  <th className="p-3 text-right border-r">Shares Pledged</th>
-                  <th className="p-3 text-right border-r">Price @ Disb</th>
-                  <th className="p-3 text-right border-r font-bold text-indigo-600 dark:text-indigo-400">Current CMP</th>
-                  <th className="p-3 text-right border-r font-bold">
+                <tr className="bg-muted/80 border-b border-border text-[11px] font-bold text-foreground uppercase tracking-wider">
+                  <th className="p-3.5 border-r min-w-48 font-bold">Borrower & Loan Facility</th>
+                  <th className="p-3.5 border-r min-w-40">Pledged Security</th>
+                  <th className="p-3.5 text-right border-r">Shares Pledged</th>
+                  <th className="p-3.5 text-right border-r">Price @ Disb</th>
+                  <th className="p-3.5 text-right border-r font-bold text-indigo-600 dark:text-indigo-400">Current CMP</th>
+                  <th className="p-3.5 text-right border-r font-bold">
                     <div>% vs Disb Price</div>
-                    <div className="text-[9px] font-normal text-muted-foreground font-sans">CMP vs Disb</div>
+                    <div className="text-[9px] font-normal text-muted-foreground font-sans lowercase">cmp vs disb</div>
                   </th>
-                  <th className="p-3 text-center border-r whitespace-nowrap">Disb Date</th>
-                  <th className="p-3 text-right border-r font-bold">Disb / Loan Amt</th>
-                  <th className="p-3 text-center border-r font-bold">Security Cover</th>
-                  <th className="p-3 text-right border-r">Security Req (**X)</th>
-                  <th className="p-3 text-right border-r font-bold text-destructive">Shortfall</th>
-                  <th className="p-3 text-center w-20">Action</th>
+                  <th className="p-3.5 text-center border-r whitespace-nowrap">Disb Date</th>
+                  <th className="p-3.5 text-right border-r font-bold">Disb / Loan Amt</th>
+                  <th className="p-3.5 text-center border-r font-bold">Security Cover</th>
+                  <th className="p-3.5 text-right border-r">Security Req (**X)</th>
+                  <th className="p-3.5 text-right border-r font-bold text-destructive">Shortfall</th>
+                  <th className="p-3.5 text-center w-20">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border font-mono text-xs">
