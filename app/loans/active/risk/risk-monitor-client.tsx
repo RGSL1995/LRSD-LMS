@@ -1110,7 +1110,7 @@ export function RiskMonitorClient({
                 <div className="flex items-center justify-between">
                   <label className="font-semibold text-muted-foreground">Security Cover Required (**X)</label>
                   <div className="flex items-center gap-1">
-                    {[2.0, 2.5, 3.0, 3.5, 4.0].map((cov) => (
+                    {[2.0, 2.5, 3.0, 3.5, 4.0, 5.0].map((cov) => (
                       <button
                         key={cov}
                         type="button"
@@ -1126,20 +1126,36 @@ export function RiskMonitorClient({
                     ))}
                   </div>
                 </div>
-                <select
-                  value={draft.requiredCover}
-                  onChange={(e) => setDraft({ ...draft, requiredCover: Number(e.target.value) || 3.5 })}
-                  className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
-                >
-                  <option value={1.5}>1.50x (66.6% LTV)</option>
-                  <option value={1.75}>1.75x (57.1% LTV)</option>
-                  <option value={2.0}>2.00x (50.0% LTV - Standard)</option>
-                  <option value={2.25}>2.25x (44.4% LTV)</option>
-                  <option value={2.5}>2.50x (40.0% LTV)</option>
-                  <option value={3.0}>3.00x (33.3% LTV)</option>
-                  <option value={3.5}>3.50x (28.6% LTV - Standard Policy)</option>
-                  <option value={4.0}>4.00x (25.0% LTV - High Margin)</option>
-                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={draft.requiredCover}
+                    onChange={(e) => setDraft({ ...draft, requiredCover: Number(e.target.value) || 3.5 })}
+                    className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
+                  >
+                    <option value={1.5}>1.50x (66.6% LTV)</option>
+                    <option value={1.75}>1.75x (57.1% LTV)</option>
+                    <option value={2.0}>2.00x (50.0% LTV)</option>
+                    <option value={2.25}>2.25x (44.4% LTV)</option>
+                    <option value={2.5}>2.50x (40.0% LTV)</option>
+                    <option value={3.0}>3.00x (33.3% LTV)</option>
+                    <option value={3.5}>3.50x (28.6% LTV)</option>
+                    <option value={4.0}>4.00x (25.0% LTV)</option>
+                    <option value={4.5}>4.50x (22.2% LTV)</option>
+                    <option value={5.0}>5.00x (20.0% LTV)</option>
+                  </select>
+                  <div className="relative">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="1"
+                      value={draft.requiredCover || ""}
+                      onChange={(e) => setDraft({ ...draft, requiredCover: Number(e.target.value) || 0 })}
+                      placeholder="Custom e.g. 3.5"
+                      className="h-8 text-xs font-mono font-bold pr-6"
+                    />
+                    <span className="absolute right-2.5 top-2 text-[11px] font-bold text-muted-foreground">x</span>
+                  </div>
+                </div>
               </div>
 
               {/* Pledgor Name */}
@@ -1447,7 +1463,7 @@ export function RiskMonitorClient({
                 <div className="flex items-center justify-between">
                   <label className="font-semibold text-muted-foreground">Security Cover Required (**X)</label>
                   <div className="flex items-center gap-1">
-                    {[2.0, 2.5, 3.0, 3.5, 4.0].map((cov) => (
+                    {[2.0, 2.5, 3.0, 3.5, 4.0, 5.0].map((cov) => (
                       <button
                         key={cov}
                         type="button"
@@ -1463,20 +1479,36 @@ export function RiskMonitorClient({
                     ))}
                   </div>
                 </div>
-                <select
-                  value={editingPosition.requiredCover}
-                  onChange={(e) => setEditingPosition({ ...editingPosition, requiredCover: Number(e.target.value) || 3.5 })}
-                  className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
-                >
-                  <option value={1.5}>1.50x (66.6% LTV)</option>
-                  <option value={1.75}>1.75x (57.1% LTV)</option>
-                  <option value={2.0}>2.00x (50.0% LTV - Standard)</option>
-                  <option value={2.25}>2.25x (44.4% LTV)</option>
-                  <option value={2.5}>2.50x (40.0% LTV)</option>
-                  <option value={3.0}>3.00x (33.3% LTV)</option>
-                  <option value={3.5}>3.50x (28.6% LTV - Standard Policy)</option>
-                  <option value={4.0}>4.00x (25.0% LTV - High Margin)</option>
-                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={editingPosition.requiredCover}
+                    onChange={(e) => setEditingPosition({ ...editingPosition, requiredCover: Number(e.target.value) || 3.5 })}
+                    className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
+                  >
+                    <option value={1.5}>1.50x (66.6% LTV)</option>
+                    <option value={1.75}>1.75x (57.1% LTV)</option>
+                    <option value={2.0}>2.00x (50.0% LTV)</option>
+                    <option value={2.25}>2.25x (44.4% LTV)</option>
+                    <option value={2.5}>2.50x (40.0% LTV)</option>
+                    <option value={3.0}>3.00x (33.3% LTV)</option>
+                    <option value={3.5}>3.50x (28.6% LTV)</option>
+                    <option value={4.0}>4.00x (25.0% LTV)</option>
+                    <option value={4.5}>4.50x (22.2% LTV)</option>
+                    <option value={5.0}>5.00x (20.0% LTV)</option>
+                  </select>
+                  <div className="relative">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="1"
+                      value={editingPosition.requiredCover || ""}
+                      onChange={(e) => setEditingPosition({ ...editingPosition, requiredCover: Number(e.target.value) || 0 })}
+                      placeholder="Custom e.g. 3.5"
+                      className="h-8 text-xs font-mono font-bold pr-6"
+                    />
+                    <span className="absolute right-2.5 top-2 text-[11px] font-bold text-muted-foreground">x</span>
+                  </div>
+                </div>
               </div>
             </div>
 
