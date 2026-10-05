@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { fetchLiveStockPrice } from "@/app/loans/market-actions";
 import type { LASSecurityItem } from "@/app/loans/las-types";
+import fs from "fs";
+import path from "path";
 
 export type LASRiskStatus = "critical" | "margin_call" | "watch" | "healthy" | "no_exposure";
 
@@ -35,6 +37,352 @@ export type LASRiskLoan = {
   securities: LASRiskSecurity[];
   lastObservedAt: string | null;
 };
+
+// MANUAL LAS RISK POSITION DATA STRUCTURE
+export type ManualLASPosition = {
+  id: string;
+  borrowerName: string;
+  loanCode: string;
+  securityName: string;
+  isin: string;
+  symbol: string;
+  sharesPledged: number;
+  priceAtDisbursement: number;
+  currentPrice: number;
+  disbursementDate: string; // YYYY-MM-DD
+  disbursedAmount: number;
+  requiredCover: number; // e.g. 2.00 representing 2.00x
+  pledgorName: string;
+  remarks: string;
+  lastPriceUpdatedAt: string | null;
+
+  // Computed Financial Metrics
+  disbursementValue: number; // sharesPledged * priceAtDisbursement
+  initialCover: number; // disbursementValue / disbursedAmount
+  currentMarketValue: number; // sharesPledged * currentPrice
+  priceFallPercent: number; // ((currentPrice - priceAtDisbursement) / priceAtDisbursement) * 100
+  currentSecurityCover: number; // currentMarketValue / disbursedAmount
+  securityRequired: number; // disbursedAmount * requiredCover
+  shortfallAmount: number; // max(0, securityRequired - currentMarketValue)
+  topUpSharesRequired: number; // shortfallAmount / currentPrice
+  status: LASRiskStatus;
+};
+
+export type ManualLASPositionInput = {
+  borrowerName: string;
+  loanCode?: string;
+  securityName: string;
+  isin?: string;
+  symbol?: string;
+  sharesPledged: number;
+  priceAtDisbursement: number;
+  currentPrice: number;
+  disbursementDate: string;
+  disbursedAmount: number;
+  requiredCover: number;
+  pledgorName?: string;
+  remarks?: string;
+};
+
+// Fallback JSON file path for reliable persistence
+const LOCAL_STORE_PATH = path.join(process.cwd(), "lib", "data", "manual-las-positions.json");
+
+function readLocalStore(): any[] {
+  try {
+    if (fs.existsSync(LOCAL_STORE_PATH)) {
+      const content = fs.readFileSync(LOCAL_STORE_PATH, "utf8");
+      return JSON.parse(content) || [];
+    }
+  } catch (err) {
+    console.error("Failed to read local LAS store:", err);
+  }
+  return [];
+}
+
+function writeLocalStore(positions: any[]) {
+  try {
+    const dir = path.dirname(LOCAL_STORE_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(positions, null, 2), "utf8");
+  } catch (err) {
+    console.error("Failed to write local LAS store:", err);
+  }
+}
+
+export function computeManualPositionMetrics(raw: any): ManualLASPosition {
+  const sharesPledged = Number(raw.sharesPledged ?? raw.shares_pledged ?? 0);
+  const priceAtDisbursement = Number(raw.priceAtDisbursement ?? raw.price_at_disbursement ?? 0);
+  const currentPrice = Number(raw.currentPrice ?? raw.current_price ?? priceAtDisbursement ?? 0);
+  const disbursedAmount = Number(raw.disbursedAmount ?? raw.disbursed_amount ?? 0);
+  const requiredCover = Number(raw.requiredCover ?? raw.required_cover ?? 2.0);
+
+  const disbursementValue = sharesPledged * priceAtDisbursement;
+  const initialCover = disbursedAmount > 0 ? disbursementValue / disbursedAmount : 0;
+  const currentMarketValue = sharesPledged * currentPrice;
+
+  const priceFallPercent =
+    priceAtDisbursement > 0 ? ((currentPrice - priceAtDisbursement) / priceAtDisbursement) * 100 : 0;
+
+  const currentSecurityCover = disbursedAmount > 0 ? currentMarketValue / disbursedAmount : 0;
+  const securityRequired = disbursedAmount * requiredCover;
+  const shortfallAmount = Math.max(0, securityRequired - currentMarketValue);
+  const topUpSharesRequired = currentPrice > 0 ? Math.ceil(shortfallAmount / currentPrice) : 0;
+
+  let status: LASRiskStatus = "healthy";
+  if (disbursedAmount <= 0) {
+    status = "no_exposure";
+  } else if (currentSecurityCover <= 1.5 || priceFallPercent <= -35) {
+    status = "critical";
+  } else if (currentSecurityCover <= 1.75 || priceFallPercent <= -25) {
+    status = "margin_call";
+  } else if (currentSecurityCover < requiredCover || priceFallPercent <= -15) {
+    status = "watch";
+  } else {
+    status = "healthy";
+  }
+
+  return {
+    id: String(raw.id || `pos_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`),
+    borrowerName: String(raw.borrowerName ?? raw.borrower_name ?? "Borrower"),
+    loanCode: String(raw.loanCode ?? raw.loan_code ?? ""),
+    securityName: String(raw.securityName ?? raw.security_name ?? "Equity Shares"),
+    isin: String(raw.isin || ""),
+    symbol: String(raw.symbol || ""),
+    sharesPledged,
+    priceAtDisbursement,
+    currentPrice,
+    disbursementDate: String(raw.disbursementDate ?? raw.disbursement_date ?? new Date().toISOString().split("T")[0]),
+    disbursedAmount,
+    requiredCover,
+    pledgorName: String(raw.pledgorName ?? raw.pledgor_name ?? "—"),
+    remarks: String(raw.remarks || ""),
+    lastPriceUpdatedAt: raw.lastPriceUpdatedAt ?? raw.last_price_updated_at ?? null,
+    disbursementValue,
+    initialCover,
+    currentMarketValue,
+    priceFallPercent,
+    currentSecurityCover,
+    securityRequired,
+    shortfallAmount,
+    topUpSharesRequired,
+    status,
+  };
+}
+
+/**
+ * Fetch all manual LAS risk positions.
+ */
+export async function getManualLASPositions(): Promise<{ positions: ManualLASPosition[]; error?: string }> {
+  try {
+    const supabase = await createClient();
+
+    // 1. Try DB table manual_las_risk_positions
+    try {
+      const { data, error } = await supabase
+        .from("manual_las_risk_positions")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const positions = data.map(computeManualPositionMetrics);
+        writeLocalStore(data);
+        return { positions };
+      }
+    } catch {
+      // Table may not exist yet
+    }
+
+    // 2. Read from persistent local file
+    const localData = readLocalStore();
+    if (localData && localData.length > 0) {
+      const positions = localData.map(computeManualPositionMetrics);
+      return { positions };
+    }
+
+    return { positions: [] };
+  } catch (err: any) {
+    console.error("getManualLASPositions error:", err);
+    return { positions: [], error: err.message };
+  }
+}
+
+/**
+ * Add a new manual LAS position.
+ */
+export async function addManualLASPositionAction(
+  input: ManualLASPositionInput
+): Promise<{ success: boolean; position?: ManualLASPosition; error?: string }> {
+  try {
+    const supabase = await createClient();
+    const newId = `las_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const now = new Date().toISOString();
+
+    const record = {
+      id: newId,
+      borrower_name: input.borrowerName,
+      loan_code: input.loanCode || "",
+      security_name: input.securityName,
+      isin: input.isin || "",
+      symbol: input.symbol || "",
+      shares_pledged: Number(input.sharesPledged) || 0,
+      price_at_disbursement: Number(input.priceAtDisbursement) || 0,
+      current_price: Number(input.currentPrice) || Number(input.priceAtDisbursement) || 0,
+      disbursement_date: input.disbursementDate,
+      disbursed_amount: Number(input.disbursedAmount) || 0,
+      required_cover: Number(input.requiredCover) || 2.0,
+      pledgor_name: input.pledgorName || "—",
+      remarks: input.remarks || "",
+      last_price_updated_at: now,
+      created_at: now,
+      updated_at: now,
+    };
+
+    // Save to DB if table exists
+    try {
+      await supabase.from("manual_las_risk_positions").insert(record);
+    } catch {
+      // Ignore if table not yet migrated
+    }
+
+    // Update local persistent store
+    const local = readLocalStore();
+    const updated = [record, ...local.filter((r) => r.id !== newId)];
+    writeLocalStore(updated);
+
+    revalidatePath("/loans/active/risk");
+    return { success: true, position: computeManualPositionMetrics(record) };
+  } catch (err: any) {
+    console.error("addManualLASPositionAction error:", err);
+    return { success: false, error: err.message || "Failed to add manual position." };
+  }
+}
+
+/**
+ * Update an existing manual LAS position.
+ */
+export async function updateManualLASPositionAction(
+  id: string,
+  input: Partial<ManualLASPositionInput>
+): Promise<{ success: boolean; position?: ManualLASPosition; error?: string }> {
+  try {
+    const supabase = await createClient();
+    const now = new Date().toISOString();
+
+    const local = readLocalStore();
+    const existingIndex = local.findIndex((r) => r.id === id);
+    const existing = existingIndex >= 0 ? local[existingIndex] : {};
+
+    const updatedRecord = {
+      ...existing,
+      id,
+      borrower_name: input.borrowerName ?? existing.borrower_name ?? existing.borrowerName,
+      loan_code: input.loanCode ?? existing.loan_code ?? existing.loanCode ?? "",
+      security_name: input.securityName ?? existing.security_name ?? existing.securityName,
+      isin: input.isin ?? existing.isin,
+      symbol: input.symbol ?? existing.symbol,
+      shares_pledged: input.sharesPledged !== undefined ? Number(input.sharesPledged) : (existing.shares_pledged ?? existing.sharesPledged),
+      price_at_disbursement: input.priceAtDisbursement !== undefined ? Number(input.priceAtDisbursement) : (existing.price_at_disbursement ?? existing.priceAtDisbursement),
+      current_price: input.currentPrice !== undefined ? Number(input.currentPrice) : (existing.current_price ?? existing.currentPrice),
+      disbursement_date: input.disbursementDate ?? existing.disbursement_date ?? existing.disbursementDate,
+      disbursed_amount: input.disbursedAmount !== undefined ? Number(input.disbursedAmount) : (existing.disbursed_amount ?? existing.disbursedAmount),
+      required_cover: input.requiredCover !== undefined ? Number(input.requiredCover) : (existing.required_cover ?? existing.requiredCover),
+      pledgor_name: input.pledgorName ?? existing.pledgor_name ?? existing.pledgorName,
+      remarks: input.remarks ?? existing.remarks,
+      last_price_updated_at: input.currentPrice !== undefined ? now : (existing.last_price_updated_at ?? existing.lastPriceUpdatedAt),
+      updated_at: now,
+    };
+
+    // Update in DB if table exists
+    try {
+      await supabase.from("manual_las_risk_positions").upsert(updatedRecord);
+    } catch {
+      // ignore
+    }
+
+    if (existingIndex >= 0) {
+      local[existingIndex] = updatedRecord;
+    } else {
+      local.unshift(updatedRecord);
+    }
+    writeLocalStore(local);
+
+    revalidatePath("/loans/active/risk");
+    return { success: true, position: computeManualPositionMetrics(updatedRecord) };
+  } catch (err: any) {
+    console.error("updateManualLASPositionAction error:", err);
+    return { success: false, error: err.message || "Failed to update manual position." };
+  }
+}
+
+/**
+ * Delete a manual LAS position.
+ */
+export async function deleteManualLASPositionAction(
+  id: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = await createClient();
+    try {
+      await supabase.from("manual_las_risk_positions").delete().eq("id", id);
+    } catch {
+      // ignore
+    }
+
+    const local = readLocalStore();
+    const updated = local.filter((r) => r.id !== id);
+    writeLocalStore(updated);
+
+    revalidatePath("/loans/active/risk");
+    return { success: true };
+  } catch (err: any) {
+    console.error("deleteManualLASPositionAction error:", err);
+    return { success: false, error: err.message || "Failed to delete position." };
+  }
+}
+
+/**
+ * Refresh live market prices for all manual positions.
+ */
+export async function refreshManualLASPricesAction(): Promise<{
+  success: boolean;
+  updatedCount?: number;
+  failedCount?: number;
+  error?: string;
+}> {
+  try {
+    const { positions } = await getManualLASPositions();
+    if (!positions.length) return { success: true, updatedCount: 0, failedCount: 0 };
+
+    let updatedCount = 0;
+    let failedCount = 0;
+    const now = new Date().toISOString();
+
+    for (const pos of positions) {
+      const query = pos.isin || pos.symbol || pos.securityName;
+      if (query) {
+        const quote = await fetchLiveStockPrice(query);
+        if (quote.success && quote.cmp && quote.cmp > 0) {
+          await updateManualLASPositionAction(pos.id, {
+            currentPrice: Number(quote.cmp),
+            symbol: quote.symbol || pos.symbol,
+            isin: quote.isin || pos.isin,
+          });
+          updatedCount++;
+        } else {
+          failedCount++;
+        }
+      }
+    }
+
+    revalidatePath("/loans/active/risk");
+    return { success: true, updatedCount, failedCount };
+  } catch (err: any) {
+    console.error("refreshManualLASPricesAction error:", err);
+    return { success: false, error: err.message || "Failed to refresh market prices." };
+  }
+}
+
+// ---------------- EXISTING AUTOMATED LOAN PORTFOLIO CODE ----------------
 
 type CollateralRow = {
   id: string;
@@ -78,7 +426,7 @@ function readSecurity(row: CollateralRow): ParsedSecurity | null {
         };
       }
     } catch {
-      // Older collateral records may use plain text in `details`.
+      // Older collateral records
     }
   }
 
@@ -137,22 +485,38 @@ export async function getLASRiskDashboard(): Promise<{ loans: LASRiskLoan[]; err
 
   const loanIds = loans.map((loan) => loan.id);
   const appIds = [...new Set(loans.map((loan) => loan.loan_application_id).filter(Boolean))] as string[];
-  const [appsRes, disbursementsRes, repaymentsRes, collateralRes] = await Promise.all([
+  const [appsRes, disbursementsRes, collateralRes] = await Promise.all([
     supabase.from("loan_applications").select("id, application_code, facility_type").in("id", appIds),
     supabase.from("loan_disbursements").select("loan_id, amount").in("loan_id", loanIds),
-    supabase.from("loan_repayments").select("loan_id, amount").in("loan_id", loanIds),
     supabase.from("loan_collaterals").select("id, loan_application_id, collateral_type, address, estimated_value, details").in("loan_application_id", appIds),
   ]);
 
   if (collateralRes.error) return { loans: [], error: collateralRes.error.message };
-  if (appsRes.error || disbursementsRes.error || repaymentsRes.error) {
-    return { loans: [], error: appsRes.error?.message || disbursementsRes.error?.message || repaymentsRes.error?.message };
+  if (appsRes.error || disbursementsRes.error) {
+    return { loans: [], error: appsRes.error?.message || disbursementsRes.error?.message };
   }
   const apps = new Map((appsRes.data || []).map((row) => [row.id, row]));
   const disbursed = new Map<string, number>();
   const repaid = new Map<string, number>();
+  const repaidByApplication = new Map<string, number>();
   for (const row of disbursementsRes.data || []) disbursed.set(row.loan_id, (disbursed.get(row.loan_id) || 0) + Number(row.amount || 0));
-  for (const row of repaymentsRes.data || []) repaid.set(row.loan_id, (repaid.get(row.loan_id) || 0) + Number(row.amount || 0));
+  const repaymentsByApplication = await supabase
+    .from("loan_repayments")
+    .select("loan_application_id, amount")
+    .in("loan_application_id", appIds);
+  if (!repaymentsByApplication.error) {
+    for (const row of repaymentsByApplication.data || []) {
+      repaidByApplication.set(row.loan_application_id, (repaidByApplication.get(row.loan_application_id) || 0) + Number(row.amount || 0));
+    }
+  } else {
+    const repaymentsByLoan = await supabase
+      .from("loan_repayments")
+      .select("loan_id, amount")
+      .in("loan_id", loanIds);
+    if (!repaymentsByLoan.error) {
+      for (const row of repaymentsByLoan.data || []) repaid.set(row.loan_id, (repaid.get(row.loan_id) || 0) + Number(row.amount || 0));
+    }
+  }
   const collateralsByApp = new Map<string, CollateralRow[]>();
   for (const row of (collateralRes.data || []) as CollateralRow[]) {
     const group = collateralsByApp.get(row.loan_application_id) || [];
@@ -201,7 +565,8 @@ export async function getLASRiskDashboard(): Promise<{ loans: LASRiskLoan[]; err
         stale,
       };
     });
-    const outstanding = Math.max(0, (disbursed.get(loan.id) || 0) - (repaid.get(loan.id) || 0));
+    const totalRepaid = repaidByApplication.get(appId) ?? repaid.get(loan.id) ?? 0;
+    const outstanding = Math.max(0, (disbursed.get(loan.id) || 0) - totalRepaid);
     const collateralValue = securities.reduce((sum, security) => sum + security.marketValue, 0);
     const coverage = outstanding > 0 ? collateralValue / outstanding : 0;
     const lastObservedAt = securities.map((security) => security.observedAt).filter(Boolean).sort().at(-1) || null;
@@ -287,7 +652,7 @@ export async function refreshLASRiskPrices(): Promise<{
         try {
           details = collateral?.details ? JSON.parse(collateral.details) as Record<string, unknown> : {};
         } catch {
-          // Replace legacy non-JSON details with the canonical LAS shape.
+          // legacy
         }
         const nextDetails = {
           ...details,

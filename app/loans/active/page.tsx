@@ -46,7 +46,7 @@ export default async function ActiveLoansPage() {
     .from("loan_applications")
     .select("*", { count: "exact", head: true });
 
-  // 2. Fetch all loans with borrowers, applications, disbursements, and repayments
+  // 2. Fetch facilities and their directly related records.
   const { data: loansData, error } = await supabase
     .from("loans")
     .select(
@@ -63,12 +63,42 @@ export default async function ActiveLoansPage() {
        ),
        loan_disbursements (
          id, amount
-       ),
-       loan_repayments (
-         id, amount
        )`
     )
     .order("created_at", { ascending: false });
+
+  // Repayments may be linked through the loan application rather than a
+  // loans -> loan_repayments foreign key, so fetch them separately.
+  const repaymentRowsByLoan = new Map<string, Array<{ id: string; amount: number }>>();
+  const repaymentRowsByApplication = new Map<string, Array<{ id: string; amount: number }>>();
+  const activeLoanIds = (loansData || []).map((loan) => loan.id);
+  const repaymentApplicationIds = [...new Set((loansData || []).map((loan) => loan.loan_application_id).filter(Boolean))] as string[];
+  if (repaymentApplicationIds.length > 0) {
+    const byApplication = await supabase
+      .from("loan_repayments")
+      .select("id, loan_application_id, amount")
+      .in("loan_application_id", repaymentApplicationIds);
+
+    if (!byApplication.error) {
+      for (const row of byApplication.data || []) {
+        const rows = repaymentRowsByApplication.get(row.loan_application_id) || [];
+        rows.push({ id: row.id, amount: Number(row.amount || 0) });
+        repaymentRowsByApplication.set(row.loan_application_id, rows);
+      }
+    } else {
+      const byLoan = await supabase
+        .from("loan_repayments")
+        .select("id, loan_id, amount")
+        .in("loan_id", activeLoanIds);
+      if (!byLoan.error) {
+        for (const row of byLoan.data || []) {
+          const rows = repaymentRowsByLoan.get(row.loan_id) || [];
+          rows.push({ id: row.id, amount: Number(row.amount || 0) });
+          repaymentRowsByLoan.set(row.loan_id, rows);
+        }
+      }
+    }
+  }
 
   // Map into ActiveLoanRow objects
   const loans: ActiveLoanRow[] = (loansData || []).map((l) => {
@@ -83,7 +113,7 @@ export default async function ActiveLoansPage() {
     );
 
     const disbursements = (l.loan_disbursements as Array<{ id: string; amount: number }>) || [];
-    const repayments = (l.loan_repayments as Array<{ id: string; amount: number }>) || [];
+    const repayments = repaymentRowsByLoan.get(l.id) || repaymentRowsByApplication.get(l.loan_application_id) || [];
 
     const totalDisbursed = disbursements.reduce((sum, d) => sum + Number(d.amount || 0), 0);
     const totalRepaid = repayments.reduce((sum, r) => sum + Number(r.amount || 0), 0);

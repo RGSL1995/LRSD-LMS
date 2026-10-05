@@ -3,10 +3,13 @@ import { ArrowLeft, ShieldAlert } from "lucide-react";
 import { NavBar } from "@/components/layout/nav-bar";
 import { LoanSubNav } from "@/components/loans/loan-subnav";
 import { RiskMonitorClient } from "./risk-monitor-client";
-import { getLASRiskDashboard } from "./actions";
+import { getLASRiskDashboard, getManualLASPositions } from "./actions";
 
 export default async function LASRiskMonitoringPage() {
-  const { loans, error } = await getLASRiskDashboard();
+  const [{ loans, error }, { positions: manualPositions }] = await Promise.all([
+    getLASRiskDashboard(),
+    getManualLASPositions(),
+  ]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -20,12 +23,14 @@ export default async function LASRiskMonitoringPage() {
               <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary"><ShieldAlert className="size-3.5" /> LAS risk monitoring</span>
             </div>
             <h1 className="mt-2 text-2xl font-bold tracking-tight">LAS Portfolio Risk Monitor</h1>
-            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground sm:text-sm">Monitor pledged share values, facility cover, LTV, and stale prices across active Loan Against Securities facilities.</p>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground sm:text-sm">
+              Manual LAS entry, live equity valuation, price fall tracking, security cover monitoring (**X), and margin call alerts.
+            </p>
           </div>
           <Link href="/loans/active" className="text-xs font-semibold text-primary hover:underline">View all active facilities</Link>
         </div>
         <LoanSubNav />
-        <RiskMonitorClient loans={loans} error={error} />
+        <RiskMonitorClient loans={loans} initialManualPositions={manualPositions} error={error} />
       </main>
     </div>
   );

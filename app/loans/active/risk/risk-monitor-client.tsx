@@ -3,163 +3,1164 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Building2, Clock3, RefreshCw, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Building2,
+  Calendar,
+  CheckCircle2,
+  Clock3,
+  Edit,
+  ExternalLink,
+  Layers,
+  Loader2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { refreshLASRiskPrices, type LASRiskLoan, type LASRiskStatus } from "./actions";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  refreshLASRiskPrices,
+  getManualLASPositions,
+  addManualLASPositionAction,
+  updateManualLASPositionAction,
+  deleteManualLASPositionAction,
+  refreshManualLASPricesAction,
+  type LASRiskLoan,
+  type LASRiskStatus,
+  type ManualLASPosition,
+  type ManualLASPositionInput,
+} from "./actions";
 
-type Filter = "all" | LASRiskStatus | "stale";
+type Filter = "all" | LASRiskStatus | "shortfall" | "stale";
 
 const STATUS_META: Record<LASRiskStatus, { label: string; className: string; rank: number }> = {
-  critical: { label: "Critical · Liquidation trigger", className: "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300", rank: 0 },
-  margin_call: { label: "Margin call", className: "border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-300", rank: 1 },
-  watch: { label: "Watch", className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300", rank: 2 },
-  healthy: { label: "Healthy", className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", rank: 3 },
+  critical: { label: "Critical · Liquidation trigger", className: "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-300", rank: 0 },
+  margin_call: { label: "Margin call · Top-up required", className: "border-orange-500/40 bg-orange-500/15 text-orange-700 dark:text-orange-300", rank: 1 },
+  watch: { label: "Watch · Cover warning", className: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300", rank: 2 },
+  healthy: { label: "Healthy · Fully covered", className: "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", rank: 3 },
   no_exposure: { label: "No drawn exposure", className: "border-border bg-muted text-muted-foreground", rank: 4 },
 };
 
-function inr(amount: number) {
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(amount || 0);
+function formatINR(amount: number, decimals: number = 0): string {
+  return new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(amount || 0);
 }
 
-function observedDate(value: string | null) {
-  if (!value) return "Not yet refreshed";
-  return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+function formatDateDDMMYYYY(dateStr?: string | null): string {
+  if (!dateStr) return "-";
+  const cleanStr = String(dateStr).split("T")[0].trim();
+  const parts = cleanStr.split("-");
+  if (parts.length === 3) {
+    const [year, month, day] = parts;
+    if (year.length === 4) {
+      return `${day.padStart(2, "0")}/${month.padStart(2, "0")}/${year}`;
+    }
+  }
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return String(dateStr);
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
 }
 
 function RiskBadge({ status }: { status: LASRiskStatus }) {
-  const meta = STATUS_META[status];
-  return <Badge variant="outline" className={`whitespace-nowrap font-semibold ${meta.className}`}>{meta.label}</Badge>;
+  const meta = STATUS_META[status] || STATUS_META.healthy;
+  return <Badge variant="outline" className={`whitespace-nowrap font-semibold text-[11px] ${meta.className}`}>{meta.label}</Badge>;
 }
 
-export function RiskMonitorClient({ loans, error }: { loans: LASRiskLoan[]; error?: string }) {
+export function RiskMonitorClient({
+  loans = [],
+  initialManualPositions = [],
+  error,
+}: {
+  loans: LASRiskLoan[];
+  initialManualPositions: ManualLASPosition[];
+  error?: string;
+}) {
   const router = useRouter();
+  const [activeTab, setActiveTab] = useState<"manual" | "portfolio">("manual");
+  const [manualPositions, setManualPositions] = useState<ManualLASPosition[]>(initialManualPositions);
   const [filter, setFilter] = useState<Filter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [feedback, setFeedback] = useState("");
   const [isPending, startTransition] = useTransition();
 
-  const orderedLoans = useMemo(() => [...loans]
-    .filter((loan) => filter === "all" || (filter === "stale" ? loan.stalePrices > 0 : loan.status === filter))
-    .sort((a, b) => STATUS_META[a.status].rank - STATUS_META[b.status].rank || a.coverage - b.coverage), [loans, filter]);
+  // Modals state
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingPosition, setEditingPosition] = useState<ManualLASPosition | null>(null);
+  const [quickPricePosition, setQuickPricePosition] = useState<ManualLASPosition | null>(null);
+  const [quickPriceInput, setQuickPriceInput] = useState<number>(0);
 
-  const critical = loans.filter((loan) => loan.status === "critical").length;
-  const marginCalls = loans.filter((loan) => loan.status === "margin_call").length;
-  const watches = loans.filter((loan) => loan.status === "watch").length;
-  const staleCount = loans.filter((loan) => loan.stalePrices > 0).length;
-  const totalExposure = loans.reduce((sum, loan) => sum + loan.outstanding, 0);
+  // New Position Draft State
+  const [draft, setDraft] = useState<ManualLASPositionInput>({
+    borrowerName: "",
+    loanCode: "",
+    securityName: "",
+    isin: "",
+    symbol: "",
+    sharesPledged: 0,
+    priceAtDisbursement: 0,
+    currentPrice: 0,
+    disbursementDate: new Date().toISOString().split("T")[0],
+    disbursedAmount: 0,
+    requiredCover: 2.0,
+    pledgorName: "",
+    remarks: "",
+  });
 
-  function refresh() {
+  // Filtered & Sorted Manual Positions
+  const filteredManualPositions = useMemo(() => {
+    return manualPositions
+      .filter((pos) => {
+        if (filter === "critical") return pos.status === "critical";
+        if (filter === "margin_call") return pos.status === "margin_call";
+        if (filter === "watch") return pos.status === "watch";
+        if (filter === "healthy") return pos.status === "healthy";
+        if (filter === "shortfall") return pos.shortfallAmount > 0;
+        return true;
+      })
+      .filter((pos) => {
+        if (!searchQuery.trim()) return true;
+        const q = searchQuery.toLowerCase();
+        return (
+          pos.borrowerName.toLowerCase().includes(q) ||
+          pos.securityName.toLowerCase().includes(q) ||
+          pos.isin.toLowerCase().includes(q) ||
+          pos.symbol.toLowerCase().includes(q) ||
+          pos.loanCode.toLowerCase().includes(q)
+        );
+      });
+  }, [manualPositions, filter, searchQuery]);
+
+  // Aggregates for Manual Positions
+  const totalManualDisbursed = manualPositions.reduce((sum, p) => sum + p.disbursedAmount, 0);
+  const totalManualMarketValue = manualPositions.reduce((sum, p) => sum + p.currentMarketValue, 0);
+  const totalManualShortfall = manualPositions.reduce((sum, p) => sum + p.shortfallAmount, 0);
+  const totalManualMarginCalls = manualPositions.filter((p) => p.status === "margin_call" || p.status === "critical").length;
+  const overallCover = totalManualDisbursed > 0 ? totalManualMarketValue / totalManualDisbursed : 0;
+
+  // Add Position Form Calculations (Live Draft Preview)
+  const draftDisbValue = draft.sharesPledged * draft.priceAtDisbursement;
+  const draftCurrentValue = draft.sharesPledged * (draft.currentPrice || draft.priceAtDisbursement);
+  const draftPriceFall = draft.priceAtDisbursement > 0
+    ? (((draft.currentPrice || draft.priceAtDisbursement) - draft.priceAtDisbursement) / draft.priceAtDisbursement) * 100
+    : 0;
+  const draftCover = draft.disbursedAmount > 0 ? draftCurrentValue / draft.disbursedAmount : 0;
+  const draftSecurityReq = draft.disbursedAmount * draft.requiredCover;
+  const draftShortfall = Math.max(0, draftSecurityReq - draftCurrentValue);
+
+  // Handle Add Position
+  const handleAddPosition = async () => {
+    if (!draft.borrowerName.trim()) {
+      alert("Please enter Borrower Name");
+      return;
+    }
+    if (!draft.securityName.trim()) {
+      alert("Please enter Security / Stock Name");
+      return;
+    }
+    if (draft.sharesPledged <= 0 || draft.priceAtDisbursement <= 0 || draft.disbursedAmount <= 0) {
+      alert("Please enter valid positive values for Shares, Price, and Loan Amount.");
+      return;
+    }
+
+    startTransition(async () => {
+      const res = await addManualLASPositionAction(draft);
+      if (res.success && res.position) {
+        setManualPositions((prev) => [res.position!, ...prev]);
+        setIsAddModalOpen(false);
+        setFeedback("New LAS position added and risk metrics calculated successfully.");
+        // Reset draft
+        setDraft({
+          borrowerName: "",
+          loanCode: "",
+          securityName: "",
+          isin: "",
+          symbol: "",
+          sharesPledged: 0,
+          priceAtDisbursement: 0,
+          currentPrice: 0,
+          disbursementDate: new Date().toISOString().split("T")[0],
+          disbursedAmount: 0,
+          requiredCover: 2.0,
+          pledgorName: "",
+          remarks: "",
+        });
+      } else {
+        setFeedback(res.error || "Failed to add position.");
+      }
+    });
+  };
+
+  // Handle Update Position
+  const handleUpdatePosition = async () => {
+    if (!editingPosition) return;
+    startTransition(async () => {
+      const res = await updateManualLASPositionAction(editingPosition.id, {
+        borrowerName: editingPosition.borrowerName,
+        loanCode: editingPosition.loanCode,
+        securityName: editingPosition.securityName,
+        isin: editingPosition.isin,
+        symbol: editingPosition.symbol,
+        sharesPledged: editingPosition.sharesPledged,
+        priceAtDisbursement: editingPosition.priceAtDisbursement,
+        currentPrice: editingPosition.currentPrice,
+        disbursementDate: editingPosition.disbursementDate,
+        disbursedAmount: editingPosition.disbursedAmount,
+        requiredCover: editingPosition.requiredCover,
+        pledgorName: editingPosition.pledgorName,
+        remarks: editingPosition.remarks,
+      });
+
+      if (res.success && res.position) {
+        setManualPositions((prev) => prev.map((p) => (p.id === res.position!.id ? res.position! : p)));
+        setEditingPosition(null);
+        setFeedback("Position updated and risk metrics recalculated.");
+      } else {
+        setFeedback(res.error || "Failed to update position.");
+      }
+    });
+  };
+
+  // Handle Quick CMP Update
+  const handleSaveQuickPrice = async () => {
+    if (!quickPricePosition || quickPriceInput <= 0) return;
+    startTransition(async () => {
+      const res = await updateManualLASPositionAction(quickPricePosition.id, {
+        currentPrice: quickPriceInput,
+      });
+      if (res.success && res.position) {
+        setManualPositions((prev) => prev.map((p) => (p.id === res.position!.id ? res.position! : p)));
+        setQuickPricePosition(null);
+        setFeedback(`Updated market price for ${quickPricePosition.securityName} to ₹${formatINR(quickPriceInput, 2)}.`);
+      }
+    });
+  };
+
+  // Handle Delete Position
+  const handleDeletePosition = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to remove the LAS position for "${name}"?`)) return;
+    startTransition(async () => {
+      const res = await deleteManualLASPositionAction(id);
+      if (res.success) {
+        setManualPositions((prev) => prev.filter((p) => p.id !== id));
+        setFeedback("Position deleted successfully.");
+      } else {
+        setFeedback(res.error || "Failed to delete position.");
+      }
+    });
+  };
+
+  // Live Refresh Market Prices
+  const handleLiveRefreshAll = () => {
     setFeedback("");
     startTransition(async () => {
-      const result = await refreshLASRiskPrices();
-      if (!result.success) {
-        setFeedback(result.error || "Price refresh failed.");
-        return;
+      const res = await refreshManualLASPricesAction();
+      if (res.success) {
+        const refreshed = await getManualLASPositions();
+        setManualPositions(refreshed.positions);
+        setFeedback(`Live quotes refreshed: ${res.updatedCount || 0} updated${res.failedCount ? `, ${res.failedCount} manual/fallback` : ""}.`);
+      } else {
+        setFeedback(res.error || "Market price refresh failed.");
       }
-      setFeedback(`Checked ${result.checkedCount || 0} pledged position(s): ${result.updatedCount || 0} live quote(s) refreshed${result.failedCount ? `, ${result.failedCount} using last known price` : ""}.`);
-      router.refresh();
     });
-  }
-
-  const filters: Array<{ value: Filter; label: string; count: number }> = [
-    { value: "all", label: "All facilities", count: loans.length },
-    { value: "critical", label: "Critical", count: critical },
-    { value: "margin_call", label: "Margin call", count: marginCalls },
-    { value: "watch", label: "Watch", count: watches },
-    { value: "stale", label: "Stale prices", count: staleCount },
-    { value: "healthy", label: "Healthy", count: loans.filter((loan) => loan.status === "healthy").length },
-  ];
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 rounded-xl border border-border/80 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Activity className="size-4" /></div>
-          <div>
-            <div className="text-sm font-semibold">LAS risk policy bands</div>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Critical at ≤1.75x cover · Margin call at ≤2.00x · Watch below 2.50x. Prices older than 24 hours are marked stale.</p>
+      {/* Top Banner with Actions */}
+      <div className="flex flex-col gap-4 rounded-xl border bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 p-5 text-white shadow-md sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold uppercase tracking-wider bg-white/10 px-2.5 py-0.5 rounded border border-white/20">
+              EQUITY RISK ENGINE
+            </span>
+            <span className="text-xs bg-indigo-500/20 text-indigo-200 px-2.5 py-0.5 rounded border border-indigo-400/30 font-medium">
+              Live Cover & Shortfall Monitoring
+            </span>
           </div>
+          <h2 className="text-xl font-bold tracking-tight text-white">LAS Pledged Shares Risk Monitor</h2>
+          <p className="text-xs text-slate-300 max-w-2xl">
+            Track pledged share volumes, price-at-disbursement vs live CMP, percentage price fall, required security cover (**X), and automated margin call shortfall triggers.
+          </p>
         </div>
-        <Button onClick={refresh} disabled={isPending || Boolean(error)} className="shrink-0">
-          <RefreshCw className={`mr-2 size-4 ${isPending ? "animate-spin" : ""}`} />
-          {isPending ? "Refreshing market data…" : "Refresh market prices"}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <Button
+            onClick={() => setIsAddModalOpen(true)}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white h-9 gap-1.5 text-xs font-semibold shadow-sm"
+          >
+            <Plus className="size-4" />
+            + Add LAS Position
+          </Button>
+          <Button
+            variant="outline"
+            onClick={handleLiveRefreshAll}
+            disabled={isPending}
+            className="bg-white/10 hover:bg-white/20 text-white border-white/20 h-9 gap-1.5 text-xs font-medium"
+          >
+            <RefreshCw className={`size-3.5 ${isPending ? "animate-spin" : ""}`} />
+            {isPending ? "Fetching Quotes…" : "Refresh Live Quotes"}
+          </Button>
+        </div>
       </div>
 
-      {(error || feedback) && <div className={`rounded-lg border p-3 text-sm ${error ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-border bg-muted/50 text-muted-foreground"}`}>{error || feedback}</div>}
-
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="LAS facilities monitored" value={String(loans.length)} icon={<Building2 className="size-4" />} />
-        <Metric label="Outstanding exposure" value={inr(totalExposure)} icon={<Activity className="size-4" />} />
-        <Metric label="Action required" value={String(critical + marginCalls)} icon={<AlertTriangle className="size-4" />} detail={`${critical} critical · ${marginCalls} margin call`} tone={critical + marginCalls > 0 ? "danger" : "normal"} />
-        <Metric label="Stale price facilities" value={String(staleCount)} icon={<Clock3 className="size-4" />} detail={`${watches} additional facilities on watch`} tone={staleCount > 0 ? "warning" : "normal"} />
-      </div>
-
-      <div className="flex flex-wrap gap-1.5 border-b border-border/70 pb-3">
-        {filters.map((item) => (
-          <button key={item.value} type="button" onClick={() => setFilter(item.value)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${filter === item.value ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}>
-            {item.label}<span className="ml-1.5 opacity-70">{item.count}</span>
-          </button>
-        ))}
-      </div>
-
-      {orderedLoans.length === 0 ? (
-        <Card className="border-dashed"><CardContent className="flex flex-col items-center py-14 text-center">
-          <ShieldCheck className="size-8 text-muted-foreground/50" />
-          <p className="mt-3 text-sm font-semibold">{loans.length ? "No facilities match this filter" : "No active LAS facilities found"}</p>
-          <p className="mt-1 max-w-md text-xs text-muted-foreground">Active LAS facilities with pledged equity securities appear here. Refresh market prices to start a timestamped risk history.</p>
-        </CardContent></Card>
-      ) : (
-        <div className="space-y-3">
-          {orderedLoans.map((loan) => <LoanRiskCard key={loan.id} loan={loan} />)}
+      {/* Feedback / Alert Notice */}
+      {(error || feedback) && (
+        <div
+          className={`rounded-lg border p-3 text-xs flex items-center justify-between gap-2 animate-in fade-in ${
+            error ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {error ? <AlertTriangle className="size-4 shrink-0" /> : <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />}
+            <span>{error || feedback}</span>
+          </div>
+          <button type="button" onClick={() => setFeedback("")} className="text-xs opacity-70 hover:opacity-100">✕</button>
         </div>
       )}
-      <p className="text-[11px] text-muted-foreground">Market quotes are sourced from Yahoo Finance and may be delayed or unavailable. Review freshness before acting on a risk flag.</p>
+
+      {/* 4 Summary Key Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Card 1: Pledged Market Value */}
+        <Card className="shadow-xs border bg-card">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-xs font-medium">Total Pledged Market Value</span>
+            <Layers className="size-4 text-primary" />
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <div className="text-xl font-bold font-mono tracking-tight text-foreground">
+              ₹{formatINR(totalManualMarketValue, 0)}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              Across <strong>{manualPositions.length}</strong> monitored position(s)
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Card 2: Disbursed Loan Exposure */}
+        <Card className="shadow-xs border bg-card">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-xs font-medium">Total Disbursed Exposure</span>
+            <Activity className="size-4 text-indigo-600" />
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <div className="text-xl font-bold font-mono tracking-tight text-indigo-600 dark:text-indigo-400">
+              ₹{formatINR(totalManualDisbursed, 0)}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              Aggregate active loan principal
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Card 3: Aggregate Security Cover (**X) */}
+        <Card className="shadow-xs border bg-card">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-xs font-medium">Weighted Security Cover</span>
+            <ShieldCheck className={`size-4 ${overallCover < 1.75 ? "text-destructive" : overallCover < 2.0 ? "text-amber-500" : "text-emerald-600"}`} />
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <div className={`text-xl font-bold font-mono tracking-tight ${overallCover < 1.75 ? "text-destructive" : overallCover < 2.0 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+              {overallCover > 0 ? `${overallCover.toFixed(2)}x` : "—"}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              Policy Benchmark: <strong>2.00x - 2.50x</strong>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Card 4: Margin Shortfall & Action Required */}
+        <Card className="shadow-xs border bg-card">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0 text-muted-foreground">
+            <span className="text-xs font-medium">Margin Shortfall / Top-up</span>
+            <AlertTriangle className={`size-4 ${totalManualShortfall > 0 ? "text-destructive" : "text-muted-foreground"}`} />
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <div className={`text-xl font-bold font-mono tracking-tight ${totalManualShortfall > 0 ? "text-destructive" : "text-foreground"}`}>
+              ₹{formatINR(totalManualShortfall, 0)}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {totalManualMarginCalls > 0 ? (
+                <span className="text-red-600 dark:text-red-400 font-semibold">{totalManualMarginCalls} position(s) breached cover</span>
+              ) : (
+                "All positions adequately covered"
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Main Table Card */}
+      <Card className="shadow-xs border">
+        <CardHeader className="p-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-muted/20">
+          <div>
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <ShieldAlert className="size-4 text-indigo-600" />
+              Manual LAS Positions & Real-Time Risk Monitor
+            </CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              Live tracking of Pledged Shares, Price @ Disbursement, Price Fall %, Security Cover (**X), and Security Required.
+            </CardDescription>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-48 sm:w-56">
+              <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Search stock, borrower, ISIN..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
+            <select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as Filter)}
+              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-medium"
+            >
+              <option value="all">All Positions ({manualPositions.length})</option>
+              <option value="critical">Critical (&le;1.50x / Fall &gt;35%)</option>
+              <option value="margin_call">Margin Call (&le;1.75x / Fall &gt;25%)</option>
+              <option value="watch">Watch (&lt;Required / Fall &gt;15%)</option>
+              <option value="healthy">Healthy (&ge;Required Cover)</option>
+              <option value="shortfall">Shortfall Only</option>
+            </select>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left border-collapse min-w-[1050px]">
+              <thead>
+                <tr className="bg-muted/70 border-b border-border text-[11px] font-bold text-foreground">
+                  <th className="p-3 border-r min-w-36">Borrower / Loan Code</th>
+                  <th className="p-3 border-r min-w-40">Pledged Security</th>
+                  <th className="p-3 text-right border-r">Shares Pledged</th>
+                  <th className="p-3 text-right border-r">Price @ Disb</th>
+                  <th className="p-3 text-right border-r font-bold text-indigo-600 dark:text-indigo-400">Current CMP</th>
+                  <th className="p-3 text-right border-r font-bold">Price Fall By</th>
+                  <th className="p-3 text-center border-r whitespace-nowrap">Disb Date</th>
+                  <th className="p-3 text-right border-r font-bold">Disb / Loan Amt</th>
+                  <th className="p-3 text-center border-r font-bold">Security Cover</th>
+                  <th className="p-3 text-right border-r">Security Req (**X)</th>
+                  <th className="p-3 text-right border-r font-bold text-destructive">Shortfall</th>
+                  <th className="p-3 text-center w-20">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border font-mono text-xs">
+                {filteredManualPositions.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="p-10 text-center text-muted-foreground font-sans text-xs">
+                      <ShieldCheck className="size-8 mx-auto text-muted-foreground/40 mb-2" />
+                      {manualPositions.length === 0
+                        ? 'No manual LAS positions recorded yet. Click "+ Add LAS Position" to enter and monitor your pledged equities.'
+                        : "No positions match the current search / filter criteria."}
+                    </td>
+                  </tr>
+                ) : (
+                  filteredManualPositions.map((pos) => {
+                    const isFalling = pos.priceFallPercent < 0;
+                    const isCoverBreached = pos.currentSecurityCover < pos.requiredCover;
+
+                    return (
+                      <tr key={pos.id} className="hover:bg-muted/30 transition-colors">
+                        {/* 1. Borrower / Loan Code */}
+                        <td className="p-3 border-r font-sans">
+                          <div className="font-bold text-foreground line-clamp-1">{pos.borrowerName}</div>
+                          <div className="text-[10px] text-muted-foreground font-mono">
+                            {pos.loanCode || "—"}{pos.pledgorName && pos.pledgorName !== "—" ? ` • Pledgor: ${pos.pledgorName}` : ""}
+                          </div>
+                        </td>
+
+                        {/* 2. Pledged Security */}
+                        <td className="p-3 border-r font-sans">
+                          <div className="font-semibold text-foreground flex items-center gap-1.5">
+                            <span className="line-clamp-1">{pos.securityName}</span>
+                            {pos.symbol && (
+                              <span className="text-[10px] font-mono font-bold bg-primary/10 text-primary px-1.5 py-0.2 rounded shrink-0">
+                                {pos.symbol}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] font-mono text-muted-foreground">
+                            {pos.isin || "No ISIN"}
+                          </div>
+                        </td>
+
+                        {/* 3. Shares Pledged */}
+                        <td className="p-3 text-right border-r font-bold text-foreground">
+                          {formatINR(pos.sharesPledged)}
+                        </td>
+
+                        {/* 4. Price @ Disbursement */}
+                        <td className="p-3 text-right border-r text-foreground">
+                          ₹{formatINR(pos.priceAtDisbursement, 2)}
+                        </td>
+
+                        {/* 5. Current CMP */}
+                        <td className="p-3 text-right border-r font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50/20 dark:bg-indigo-950/10">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <span>₹{formatINR(pos.currentPrice, 2)}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuickPricePosition(pos);
+                                setQuickPriceInput(pos.currentPrice);
+                              }}
+                              title="Quick Update Price"
+                              className="text-muted-foreground hover:text-indigo-600 p-0.5 rounded hover:bg-muted transition-colors"
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* 6. Price Fall By */}
+                        <td className="p-3 text-right border-r font-bold">
+                          {pos.priceFallPercent !== 0 ? (
+                            <span
+                              className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] ${
+                                isFalling
+                                  ? "bg-red-500/15 text-red-700 dark:text-red-400 border border-red-500/30"
+                                  : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30"
+                              }`}
+                            >
+                              {isFalling ? <ArrowDownRight className="size-3 shrink-0" /> : <ArrowUpRight className="size-3 shrink-0" />}
+                              {pos.priceFallPercent > 0 ? `+${pos.priceFallPercent.toFixed(2)}%` : `${pos.priceFallPercent.toFixed(2)}%`}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">0.00%</span>
+                          )}
+                        </td>
+
+                        {/* 7. Date of Disbursement */}
+                        <td className="p-3 text-center border-r font-mono whitespace-nowrap text-foreground">
+                          {formatDateDDMMYYYY(pos.disbursementDate)}
+                        </td>
+
+                        {/* 8. Disbursement / Loan Amount */}
+                        <td className="p-3 text-right border-r font-bold text-foreground">
+                          ₹{formatINR(pos.disbursedAmount, 0)}
+                        </td>
+
+                        {/* 9. Security Cover (**X) */}
+                        <td className="p-3 text-center border-r font-bold">
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded font-mono font-bold ${
+                                pos.status === "critical"
+                                  ? "bg-red-600 text-white"
+                                  : pos.status === "margin_call"
+                                  ? "bg-orange-500 text-white"
+                                  : pos.status === "watch"
+                                  ? "bg-amber-400 text-slate-950"
+                                  : "bg-emerald-600 text-white"
+                              }`}
+                            >
+                              {pos.currentSecurityCover.toFixed(2)}x
+                            </span>
+                            <span className="text-[9px] font-sans text-muted-foreground font-normal">
+                              Req: {pos.requiredCover.toFixed(2)}x
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* 10. Security Required */}
+                        <td className="p-3 text-right border-r text-muted-foreground">
+                          ₹{formatINR(pos.securityRequired, 0)}
+                        </td>
+
+                        {/* 11. Shortfall / Margin Call */}
+                        <td className="p-3 text-right border-r font-bold">
+                          {pos.shortfallAmount > 0 ? (
+                            <div className="text-red-600 dark:text-red-400 font-bold">
+                              <div>₹{formatINR(pos.shortfallAmount, 0)}</div>
+                              <span className="text-[9px] font-sans text-muted-foreground block font-normal">
+                                +{formatINR(pos.topUpSharesRequired)} shs
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-emerald-600 text-[11px] font-semibold">Covered</span>
+                          )}
+                        </td>
+
+                        {/* 12. Actions */}
+                        <td className="p-3 text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setEditingPosition(pos)}
+                              title="Edit Position"
+                              className="text-muted-foreground hover:text-indigo-600 p-1 rounded hover:bg-muted transition-colors"
+                            >
+                              <Pencil className="size-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeletePosition(pos.id, pos.securityName)}
+                              title="Delete Position"
+                              className="text-muted-foreground hover:text-destructive p-1 rounded hover:bg-destructive/10 transition-colors"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+
+              {/* Totals Footer */}
+              {filteredManualPositions.length > 0 && (
+                <tfoot className="bg-muted/80 font-mono text-xs border-t-2 border-border font-bold">
+                  <tr>
+                    <td colSpan={2} className="p-3 border-r font-sans font-bold text-right">
+                      Portfolio Totals / Averages:
+                    </td>
+                    <td className="p-3 text-right border-r text-foreground">
+                      {formatINR(filteredManualPositions.reduce((s, p) => s + p.sharesPledged, 0))}
+                    </td>
+                    <td className="p-3 border-r text-center text-muted-foreground font-sans">-</td>
+                    <td className="p-3 text-right border-r text-indigo-600 dark:text-indigo-400">
+                      ₹{formatINR(filteredManualPositions.reduce((s, p) => s + p.currentMarketValue, 0), 0)} (MV)
+                    </td>
+                    <td className="p-3 text-right border-r text-muted-foreground font-sans">-</td>
+                    <td className="p-3 border-r text-center text-muted-foreground font-sans">-</td>
+                    <td className="p-3 text-right border-r text-foreground">
+                      ₹{formatINR(filteredManualPositions.reduce((s, p) => s + p.disbursedAmount, 0), 0)}
+                    </td>
+                    <td className="p-3 text-center border-r font-bold text-primary">
+                      {filteredManualPositions.reduce((s, p) => s + p.disbursedAmount, 0) > 0
+                        ? `${(
+                            filteredManualPositions.reduce((s, p) => s + p.currentMarketValue, 0) /
+                            filteredManualPositions.reduce((s, p) => s + p.disbursedAmount, 0)
+                          ).toFixed(2)}x`
+                        : "—"}
+                    </td>
+                    <td className="p-3 text-right border-r text-muted-foreground">
+                      ₹{formatINR(filteredManualPositions.reduce((s, p) => s + p.securityRequired, 0), 0)}
+                    </td>
+                    <td className="p-3 text-right border-r text-destructive font-bold">
+                      ₹{formatINR(filteredManualPositions.reduce((s, p) => s + p.shortfallAmount, 0), 0)}
+                    </td>
+                    <td className="p-3"></td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ADD MANUAL LAS POSITION MODAL */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-card border rounded-xl shadow-2xl max-w-2xl w-full p-6 space-y-4 text-foreground animate-in fade-in zoom-in-95">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <h3 className="text-sm font-bold flex items-center gap-2 text-indigo-600 dark:text-indigo-400">
+                  <Plus className="size-4" />
+                  Add Manual LAS Risk Position
+                </h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Enter loan disbursement details, pledged shares, disbursement price, and minimum required security cover.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddModalOpen(false)}
+                className="text-muted-foreground hover:text-foreground text-sm px-2 py-1 rounded"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Live Calculation Preview Banner */}
+            <div className="p-3 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-xs space-y-1.5">
+              <div className="flex items-center justify-between font-bold text-indigo-950 dark:text-indigo-200">
+                <span className="flex items-center gap-1.5"><Sparkles className="size-3.5 text-indigo-500" /> Live Risk Metrics Preview</span>
+                <span className="font-mono">Security Cover: <strong className="text-primary">{draftCover > 0 ? `${draftCover.toFixed(2)}x` : "0.00x"}</strong> (Req: {draft.requiredCover}x)</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
+                <div className="bg-card/80 p-1.5 rounded border">
+                  <span className="text-muted-foreground block text-[10px] font-sans">Val @ Disb:</span>
+                  <strong>₹{formatINR(draftDisbValue, 0)}</strong>
+                </div>
+                <div className="bg-card/80 p-1.5 rounded border">
+                  <span className="text-muted-foreground block text-[10px] font-sans">Current Mkt Val:</span>
+                  <strong className="text-indigo-600 dark:text-indigo-400">₹{formatINR(draftCurrentValue, 0)}</strong>
+                </div>
+                <div className="bg-card/80 p-1.5 rounded border">
+                  <span className="text-muted-foreground block text-[10px] font-sans">Price Fall By:</span>
+                  <strong className={draftPriceFall < 0 ? "text-red-600" : "text-emerald-600"}>
+                    {draftPriceFall > 0 ? `+${draftPriceFall.toFixed(1)}%` : `${draftPriceFall.toFixed(1)}%`}
+                  </strong>
+                </div>
+                <div className="bg-card/80 p-1.5 rounded border">
+                  <span className="text-muted-foreground block text-[10px] font-sans">Margin Shortfall:</span>
+                  <strong className={draftShortfall > 0 ? "text-red-600" : "text-emerald-600"}>
+                    {draftShortfall > 0 ? `₹${formatINR(draftShortfall, 0)}` : "Nil"}
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Form Fields */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              {/* Borrower Name */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Borrower / Company Name *</label>
+                <Input
+                  value={draft.borrowerName}
+                  onChange={(e) => setDraft({ ...draft, borrowerName: e.target.value })}
+                  placeholder="e.g. Apex Enterprises Pvt Ltd"
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              {/* Loan Code / Facility Code */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Loan / Facility Code</label>
+                <Input
+                  value={draft.loanCode}
+                  onChange={(e) => setDraft({ ...draft, loanCode: e.target.value })}
+                  placeholder="e.g. LN-LAS-2026-001"
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+
+              {/* Security Name */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Pledged Security / Stock Name *</label>
+                <Input
+                  value={draft.securityName}
+                  onChange={(e) => setDraft({ ...draft, securityName: e.target.value })}
+                  placeholder="e.g. Reliance Industries, HDFC Bank"
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              {/* Symbol / ISIN */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="font-semibold text-muted-foreground">NSE Symbol</label>
+                  <Input
+                    value={draft.symbol}
+                    onChange={(e) => setDraft({ ...draft, symbol: e.target.value.toUpperCase() })}
+                    placeholder="e.g. RELIANCE"
+                    className="h-8 text-xs font-mono uppercase"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-semibold text-muted-foreground">ISIN Code</label>
+                  <Input
+                    value={draft.isin}
+                    onChange={(e) => setDraft({ ...draft, isin: e.target.value.toUpperCase() })}
+                    placeholder="INE002A01018"
+                    className="h-8 text-xs font-mono uppercase"
+                  />
+                </div>
+              </div>
+
+              {/* Shares Pledged */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Shares Pledged (Quantity) *</label>
+                <Input
+                  type="number"
+                  value={draft.sharesPledged || ""}
+                  onChange={(e) => setDraft({ ...draft, sharesPledged: Number(e.target.value) || 0 })}
+                  placeholder="e.g. 50000"
+                  className="h-8 text-xs font-mono font-bold"
+                />
+              </div>
+
+              {/* Price @ Disbursement */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Price @ Disbursement (₹) *</label>
+                <Input
+                  type="number"
+                  value={draft.priceAtDisbursement || ""}
+                  onChange={(e) => {
+                    const p = Number(e.target.value) || 0;
+                    setDraft({
+                      ...draft,
+                      priceAtDisbursement: p,
+                      currentPrice: draft.currentPrice === 0 ? p : draft.currentPrice,
+                    });
+                  }}
+                  placeholder="e.g. 2450.00"
+                  className="h-8 text-xs font-mono font-bold"
+                />
+              </div>
+
+              {/* Current Market Price (CMP) */}
+              <div className="space-y-1">
+                <label className="font-semibold text-indigo-600 dark:text-indigo-400">Current Market Price (CMP ₹)</label>
+                <Input
+                  type="number"
+                  value={draft.currentPrice || ""}
+                  onChange={(e) => setDraft({ ...draft, currentPrice: Number(e.target.value) || 0 })}
+                  placeholder="e.g. 2100.00"
+                  className="h-8 text-xs font-mono font-bold border-indigo-400/50 bg-indigo-50/20 dark:bg-indigo-950/20"
+                />
+              </div>
+
+              {/* Disbursement Date */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Date of Disbursement</label>
+                <Input
+                  type="date"
+                  value={draft.disbursementDate}
+                  onChange={(e) => setDraft({ ...draft, disbursementDate: e.target.value })}
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+
+              {/* Disbursement / Loan Amount */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Disbursement / Loan Amount (₹) *</label>
+                <Input
+                  type="number"
+                  value={draft.disbursedAmount || ""}
+                  onChange={(e) => setDraft({ ...draft, disbursedAmount: Number(e.target.value) || 0 })}
+                  placeholder="e.g. 50000000 (5 Cr)"
+                  className="h-8 text-xs font-mono font-bold text-indigo-600"
+                />
+              </div>
+
+              {/* Security Cover Required (**X) */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Security Cover Required (**X Multiple)</label>
+                <select
+                  value={draft.requiredCover}
+                  onChange={(e) => setDraft({ ...draft, requiredCover: Number(e.target.value) || 2.0 })}
+                  className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
+                >
+                  <option value={1.5}>1.50x (66.6% LTV)</option>
+                  <option value={1.75}>1.75x (57.1% LTV)</option>
+                  <option value={2.0}>2.00x (50.0% LTV - Standard)</option>
+                  <option value={2.25}>2.25x (44.4% LTV)</option>
+                  <option value={2.5}>2.50x (40.0% LTV - High Volatility)</option>
+                  <option value={3.0}>3.00x (33.3% LTV - Ultra Safe)</option>
+                </select>
+              </div>
+
+              {/* Pledgor Name */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Pledgor Name / Entity</label>
+                <Input
+                  value={draft.pledgorName}
+                  onChange={(e) => setDraft({ ...draft, pledgorName: e.target.value })}
+                  placeholder="e.g. Promoter Holdings Ltd"
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              {/* Remarks */}
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Remarks / Monitoring Notes</label>
+                <Input
+                  value={draft.remarks}
+                  onChange={(e) => setDraft({ ...draft, remarks: e.target.value })}
+                  placeholder="e.g. Quarterly review scheduled"
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end gap-2 border-t pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsAddModalOpen(false)}
+                className="h-8 text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleAddPosition}
+                disabled={isPending}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white h-8 text-xs font-semibold gap-1.5 shadow-sm"
+              >
+                {isPending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                Save & Calculate Risk
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK PRICE UPDATE & STRESS SIMULATOR MODAL */}
+      {quickPricePosition && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-card border rounded-xl shadow-2xl max-w-md w-full p-5 space-y-4 text-foreground animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b pb-2.5">
+              <div>
+                <h3 className="text-sm font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
+                  <TrendingDown className="size-4" />
+                  Update CMP / Stress Simulator
+                </h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">{quickPricePosition.securityName} ({quickPricePosition.borrowerName})</p>
+              </div>
+              <button type="button" onClick={() => setQuickPricePosition(null)} className="text-muted-foreground hover:text-foreground">✕</button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2 bg-muted/40 p-2.5 rounded font-mono text-[11px]">
+                <div>
+                  <span className="text-muted-foreground text-[10px] block font-sans">Price @ Disb:</span>
+                  <strong>₹{formatINR(quickPricePosition.priceAtDisbursement, 2)}</strong>
+                </div>
+                <div>
+                  <span className="text-muted-foreground text-[10px] block font-sans">Shares:</span>
+                  <strong>{formatINR(quickPricePosition.sharesPledged)}</strong>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="font-semibold text-muted-foreground">Enter Current Market Price (₹):</label>
+                <Input
+                  type="number"
+                  value={quickPriceInput || ""}
+                  onChange={(e) => setQuickPriceInput(Number(e.target.value) || 0)}
+                  className="h-9 text-sm font-mono font-bold"
+                />
+              </div>
+
+              {/* Stress Simulator Quick Drop Buttons */}
+              <div className="space-y-1">
+                <span className="text-[10px] text-muted-foreground font-semibold uppercase">Simulate Price Drops:</span>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[10, 20, 30, 40].map((drop) => {
+                    const simPrice = Math.round(quickPricePosition.priceAtDisbursement * (1 - drop / 100) * 100) / 100;
+                    return (
+                      <button
+                        key={drop}
+                        type="button"
+                        onClick={() => setQuickPriceInput(simPrice)}
+                        className="py-1 px-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:text-red-300 border border-red-500/20 text-[10px] font-mono font-semibold"
+                      >
+                        -{drop}% (₹{simPrice})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Live Outcome Calculation */}
+              {quickPriceInput > 0 && (
+                <div className="p-2.5 rounded bg-indigo-50/50 dark:bg-indigo-950/30 border text-[11px] font-mono space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground font-sans">Price Move:</span>
+                    <strong className={quickPriceInput < quickPricePosition.priceAtDisbursement ? "text-red-600" : "text-emerald-600"}>
+                      {(((quickPriceInput - quickPricePosition.priceAtDisbursement) / quickPricePosition.priceAtDisbursement) * 100).toFixed(2)}%
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground font-sans">Updated Cover:</span>
+                    <strong>{((quickPricePosition.sharesPledged * quickPriceInput) / quickPricePosition.disbursedAmount).toFixed(2)}x</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground font-sans">Shortfall:</span>
+                    <strong className="text-destructive">
+                      ₹{formatINR(Math.max(0, quickPricePosition.securityRequired - (quickPricePosition.sharesPledged * quickPriceInput)), 0)}
+                    </strong>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t pt-3">
+              <Button type="button" variant="outline" size="sm" onClick={() => setQuickPricePosition(null)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSaveQuickPrice}
+                disabled={isPending || quickPriceInput <= 0}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white h-8 text-xs font-semibold"
+              >
+                {isPending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                Apply & Update
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT POSITION DETAILS MODAL */}
+      {editingPosition && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-card border rounded-xl shadow-2xl max-w-2xl w-full p-6 space-y-4 text-foreground animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <h3 className="text-sm font-bold flex items-center gap-2 text-indigo-600 dark:text-indigo-400">
+                  <Pencil className="size-4" />
+                  Edit LAS Position Details
+                </h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Update quantities, disbursement price, current CMP, or loan amounts.
+                </p>
+              </div>
+              <button type="button" onClick={() => setEditingPosition(null)} className="text-muted-foreground hover:text-foreground">✕</button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Borrower Name</label>
+                <Input
+                  value={editingPosition.borrowerName}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, borrowerName: e.target.value })}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Loan Code</label>
+                <Input
+                  value={editingPosition.loanCode}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, loanCode: e.target.value })}
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Security / Stock Name</label>
+                <Input
+                  value={editingPosition.securityName}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, securityName: e.target.value })}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="font-semibold text-muted-foreground">NSE Symbol</label>
+                  <Input
+                    value={editingPosition.symbol}
+                    onChange={(e) => setEditingPosition({ ...editingPosition, symbol: e.target.value.toUpperCase() })}
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-semibold text-muted-foreground">ISIN</label>
+                  <Input
+                    value={editingPosition.isin}
+                    onChange={(e) => setEditingPosition({ ...editingPosition, isin: e.target.value.toUpperCase() })}
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Shares Pledged</label>
+                <Input
+                  type="number"
+                  value={editingPosition.sharesPledged || ""}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, sharesPledged: Number(e.target.value) || 0 })}
+                  className="h-8 text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Price @ Disbursement (₹)</label>
+                <Input
+                  type="number"
+                  value={editingPosition.priceAtDisbursement || ""}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, priceAtDisbursement: Number(e.target.value) || 0 })}
+                  className="h-8 text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-indigo-600 dark:text-indigo-400">Current CMP (₹)</label>
+                <Input
+                  type="number"
+                  value={editingPosition.currentPrice || ""}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, currentPrice: Number(e.target.value) || 0 })}
+                  className="h-8 text-xs font-mono font-bold border-indigo-400/50 bg-indigo-50/20 dark:bg-indigo-950/20"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Disbursement Date</label>
+                <Input
+                  type="date"
+                  value={editingPosition.disbursementDate}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, disbursementDate: e.target.value })}
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Disbursement / Loan Amount (₹)</label>
+                <Input
+                  type="number"
+                  value={editingPosition.disbursedAmount || ""}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, disbursedAmount: Number(e.target.value) || 0 })}
+                  className="h-8 text-xs font-mono font-bold text-indigo-600"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">Security Cover Required</label>
+                <select
+                  value={editingPosition.requiredCover}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, requiredCover: Number(e.target.value) || 2.0 })}
+                  className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
+                >
+                  <option value={1.5}>1.50x (66.6% LTV)</option>
+                  <option value={1.75}>1.75x (57.1% LTV)</option>
+                  <option value={2.0}>2.00x (50.0% LTV - Standard)</option>
+                  <option value={2.25}>2.25x (44.4% LTV)</option>
+                  <option value={2.5}>2.50x (40.0% LTV)</option>
+                  <option value={3.0}>3.00x (33.3% LTV)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t pt-3">
+              <Button type="button" variant="outline" size="sm" onClick={() => setEditingPosition(null)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleUpdatePosition}
+                disabled={isPending}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white h-8 text-xs font-semibold gap-1.5 shadow-sm"
+              >
+                {isPending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                Save Changes
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-}
-
-function Metric({ label, value, icon, detail, tone = "normal" }: { label: string; value: string; icon: React.ReactNode; detail?: string; tone?: "normal" | "warning" | "danger" }) {
-  return <Card><CardContent className="p-4">
-    <div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span><span className={tone === "danger" ? "text-red-600" : tone === "warning" ? "text-amber-600" : "text-primary"}>{icon}</span></div>
-    <div className={`mt-2 text-xl font-bold tracking-tight ${tone === "danger" ? "text-red-700 dark:text-red-300" : "text-foreground"}`}>{value}</div>
-    {detail && <div className="mt-1 text-[11px] text-muted-foreground">{detail}</div>}
-  </CardContent></Card>;
-}
-
-function LoanRiskCard({ loan }: { loan: LASRiskLoan }) {
-  return <Card className="overflow-hidden border-border/80">
-    <CardContent className="p-0">
-      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1.1fr)_repeat(3,minmax(120px,.55fr))_auto] lg:items-center">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2"><Link href={`/loans/active/${loan.id}`} className="font-mono text-sm font-bold hover:text-primary">{loan.loanCode}</Link><RiskBadge status={loan.status} /></div>
-          <div className="mt-1 truncate text-xs font-medium text-foreground">{loan.borrower}</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">Application {loan.applicationCode} · {loan.securities.length} pledged scrip{loan.securities.length === 1 ? "" : "s"}</div>
-        </div>
-        <Value label="Security cover" value={loan.outstanding > 0 ? `${loan.coverage.toFixed(2)}x` : "—"} detail={loan.stalePrices ? `${loan.stalePrices} stale quote${loan.stalePrices === 1 ? "" : "s"}` : "Prices current"} tone={loan.status === "critical" || loan.status === "margin_call" ? "danger" : "normal"} />
-        <Value label="LTV" value={loan.outstanding > 0 ? `${loan.ltv.toFixed(1)}%` : "—"} detail={`Outstanding ${inr(loan.outstanding)}`} />
-        <Value label="Pledged market value" value={inr(loan.collateralValue)} detail={`Last quote ${observedDate(loan.lastObservedAt)}`} />
-        <Link href={`/loans/active/${loan.id}`} className="inline-flex items-center justify-center rounded-md border border-border px-3 py-2 text-xs font-semibold hover:bg-muted">Open facility</Link>
-      </div>
-      <div className="overflow-x-auto border-t bg-muted/20">
-        <table className="w-full min-w-[820px] text-left text-xs">
-          <thead className="text-[10px] uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-2 font-semibold">Pledged security</th><th className="px-4 py-2 font-semibold">ISIN</th><th className="px-4 py-2 text-right font-semibold">Quantity</th><th className="px-4 py-2 text-right font-semibold">CMP</th><th className="px-4 py-2 text-right font-semibold">1D move</th><th className="px-4 py-2 text-right font-semibold">Market value</th><th className="px-4 py-2 text-right font-semibold">Quote status</th></tr></thead>
-          <tbody className="divide-y divide-border/60">{loan.securities.map((security) => <tr key={security.collateralId}>
-            <td className="px-4 py-2.5 font-medium">{security.name}<div className="mt-0.5 text-[10px] text-muted-foreground">{security.symbol ? `${security.symbol} · ` : ""}Pledgor: {security.pledgor}</div></td>
-            <td className="px-4 py-2.5 font-mono text-muted-foreground">{security.isin || "—"}</td>
-            <td className="px-4 py-2.5 text-right font-mono">{security.quantity.toLocaleString("en-IN")}</td>
-            <td className="px-4 py-2.5 text-right font-mono">{security.cmp ? inr(security.cmp) : "—"}</td>
-            <td className="px-4 py-2.5 text-right font-mono">{security.previousCmp && security.previousCmp > 0 ? (() => { const change = ((security.cmp - security.previousCmp) / security.previousCmp) * 100; const Icon = change < 0 ? ArrowDownRight : ArrowUpRight; return <span className={`inline-flex items-center justify-end gap-0.5 ${change < 0 ? "text-red-600" : "text-emerald-600"}`}><Icon className="size-3" />{Math.abs(change).toFixed(2)}%</span>; })() : "—"}</td>
-            <td className="px-4 py-2.5 text-right font-mono">{inr(security.marketValue)}</td>
-            <td className="px-4 py-2.5 text-right"><span className={`inline-flex items-center gap-1 ${security.stale ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}`}>{security.stale ? <><Clock3 className="size-3" /> Stale</> : <><RefreshCw className="size-3" /> Current</>}</span></td>
-          </tr>)}</tbody>
-        </table>
-      </div>
-    </CardContent>
-  </Card>;
-}
-
-function Value({ label, value, detail, tone = "normal" }: { label: string; value: string; detail: string; tone?: "normal" | "danger" }) {
-  return <div><div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div><div className={`mt-1 text-sm font-bold font-mono ${tone === "danger" ? "text-red-700 dark:text-red-300" : "text-foreground"}`}>{value}</div><div className="mt-0.5 truncate text-[10px] text-muted-foreground">{detail}</div></div>;
 }

@@ -76,9 +76,6 @@ export default async function LoanServicingDetailPage({
        ),
        loan_disbursements (
          id, amount, disbursed_at, reference_number
-       ),
-       loan_repayments (
-         id, amount, paid_at, reference_number
        )`
     )
     .eq("id", id)
@@ -87,6 +84,38 @@ export default async function LoanServicingDetailPage({
   if (error || !loan) {
     notFound();
   }
+
+  type RepaymentRow = { id: string; amount: number; paid_at: string; reference_number?: string | null };
+  let repayments: RepaymentRow[] = [];
+  if (loan.loan_application_id) {
+    const byApplication = await supabase
+      .from("loan_repayments")
+      .select("id, amount, payment_date, reference_number")
+      .eq("loan_application_id", loan.loan_application_id);
+    if (!byApplication.error) {
+      repayments = (byApplication.data || []).map((row) => ({
+        id: row.id,
+        amount: Number(row.amount || 0),
+        paid_at: row.payment_date,
+        reference_number: row.reference_number,
+      }));
+    }
+  }
+  if (repayments.length === 0) {
+    const byLoan = await supabase
+      .from("loan_repayments")
+      .select("id, amount, paid_at, reference_number")
+      .eq("loan_id", loan.id);
+    if (!byLoan.error) {
+      repayments = (byLoan.data || []).map((row) => ({
+        id: row.id,
+        amount: Number(row.amount || 0),
+        paid_at: row.paid_at,
+        reference_number: row.reference_number,
+      }));
+    }
+  }
+  repayments.sort((a, b) => String(b.paid_at || "").localeCompare(String(a.paid_at || "")));
 
   const rawBorrower = unwrapRelation<EmbeddedBorrower>(loan.borrowers as unknown as Relation<EmbeddedBorrower>);
   const ind = unwrapRelation<{ full_name: string; phone?: string | null; email?: string | null }>(rawBorrower?.individual_profiles);
@@ -161,8 +190,6 @@ export default async function LoanServicingDetailPage({
   const coverStatus = getCoverageStatus(overallCoverage);
 
   const disbursements = (loan.loan_disbursements as Array<{ id: string; amount: number; disbursed_at: string; reference_number?: string | null }>) || [];
-  const repayments = (loan.loan_repayments as Array<{ id: string; amount: number; paid_at: string; reference_number?: string | null }>) || [];
-
   const totalDisbursed = disbursements.reduce((sum, d) => sum + Number(d.amount || 0), 0);
   const totalRepaid = repayments.reduce((sum, r) => sum + Number(r.amount || 0), 0);
   const outstandingPrincipal = Math.max(0, totalDisbursed - totalRepaid);
