@@ -257,8 +257,29 @@ export async function addManualLASPositionAction(
   }
 }
 
+function isSameSecurity(
+  a: { isin?: string | null; symbol?: string | null; security_name?: string | null; securityName?: string | null },
+  b: { isin?: string | null; symbol?: string | null; security_name?: string | null; securityName?: string | null }
+): boolean {
+  const isinA = (a.isin || "").trim().toUpperCase();
+  const isinB = (b.isin || "").trim().toUpperCase();
+  if (isinA && isinB && isinA === isinB) return true;
+
+  const symA = (a.symbol || "").trim().toUpperCase();
+  const symB = (b.symbol || "").trim().toUpperCase();
+  if (symA && symB && symA === symB) return true;
+
+  const nameA = (a.security_name || a.securityName || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const nameB = (b.security_name || b.securityName || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (nameA && nameB && nameA.length > 3 && (nameA === nameB || nameA.includes(nameB) || nameB.includes(nameA))) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Update an existing manual LAS position.
+ * If currentPrice is updated, automatically synchronizes CMP across all other positions with the same security.
  */
 export async function updateManualLASPositionAction(
   id: string,
@@ -304,6 +325,25 @@ export async function updateManualLASPositionAction(
     } else {
       local.unshift(updatedRecord);
     }
+
+    // Synchronize currentPrice across all other positions with the same security
+    if (input.currentPrice !== undefined && Number(input.currentPrice) > 0) {
+      const newPrice = Number(input.currentPrice);
+      for (let i = 0; i < local.length; i++) {
+        if (local[i].id !== id && isSameSecurity(local[i], updatedRecord)) {
+          local[i].current_price = newPrice;
+          local[i].last_price_updated_at = now;
+          if (updatedRecord.symbol && !local[i].symbol) local[i].symbol = updatedRecord.symbol;
+          if (updatedRecord.isin && !local[i].isin) local[i].isin = updatedRecord.isin;
+          try {
+            await supabase.from("manual_las_risk_positions").upsert(local[i]);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
     writeLocalStore(local);
 
     revalidatePath("/loans/active/risk");
@@ -342,6 +382,7 @@ export async function deleteManualLASPositionAction(
 
 /**
  * Refresh live market prices for all manual positions.
+ * Ensures that identical securities share the exact same live CMP across the entire portfolio.
  */
 export async function refreshManualLASPricesAction(): Promise<{
   success: boolean;
@@ -357,20 +398,39 @@ export async function refreshManualLASPricesAction(): Promise<{
     let failedCount = 0;
     const now = new Date().toISOString();
 
+    // Map to cache live quotes per unique security key
+    const quoteCache = new Map<string, { cmp: number; symbol?: string; isin?: string }>();
+
     for (const pos of positions) {
-      const query = pos.isin || pos.symbol || pos.securityName;
-      if (query) {
-        const quote = await fetchLiveStockPrice(query);
-        if (quote.success && quote.cmp && quote.cmp > 0) {
-          await updateManualLASPositionAction(pos.id, {
-            currentPrice: Number(quote.cmp),
-            symbol: quote.symbol || pos.symbol,
-            isin: quote.isin || pos.isin,
-          });
-          updatedCount++;
-        } else {
-          failedCount++;
+      const cacheKey = (pos.isin || pos.symbol || pos.securityName || "").trim().toUpperCase();
+      let quoteData = quoteCache.get(cacheKey);
+
+      if (!quoteData) {
+        const query = pos.isin || pos.symbol || pos.securityName;
+        if (query) {
+          const quote = await fetchLiveStockPrice(query);
+          if (quote.success && quote.cmp && quote.cmp > 0) {
+            quoteData = {
+              cmp: Number(quote.cmp),
+              symbol: quote.symbol || pos.symbol,
+              isin: quote.isin || pos.isin,
+            };
+            quoteCache.set(cacheKey, quoteData);
+            if (pos.symbol) quoteCache.set(pos.symbol.trim().toUpperCase(), quoteData);
+            if (pos.isin) quoteCache.set(pos.isin.trim().toUpperCase(), quoteData);
+          }
         }
+      }
+
+      if (quoteData && quoteData.cmp > 0) {
+        await updateManualLASPositionAction(pos.id, {
+          currentPrice: quoteData.cmp,
+          symbol: quoteData.symbol || pos.symbol,
+          isin: quoteData.isin || pos.isin,
+        });
+        updatedCount++;
+      } else {
+        failedCount++;
       }
     }
 
