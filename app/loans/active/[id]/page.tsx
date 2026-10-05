@@ -374,7 +374,6 @@ export default async function LoanServicingDetailPage({
             </div>
             <LASSecuritiesTable
               securities={lasSecurities}
-              onChange={() => {}}
               requestedLoanAmount={sanctionedAmount}
               readOnly
             />

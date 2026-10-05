@@ -627,7 +627,6 @@ export default async function LoanApplicationDetailPage({
             </h2>
             <LASSecuritiesTable
               securities={lasSecurities}
-              onChange={() => {}}
               requestedLoanAmount={reqAmount}
               providers={availableSecurityProviders}
               readOnly

@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 
 interface LASSecuritiesTableProps {
   securities: LASSecurityItem[];
-  onChange: (items: LASSecurityItem[]) => void;
+  onChange?: (items: LASSecurityItem[]) => void;
   requestedLoanAmount?: number;
   providers?: SecurityProviderOption[];
   onAddNewProvider?: () => void;
@@ -141,7 +141,7 @@ export function LASSecuritiesTable({
           return s;
         })
       );
-      onChange(updated);
+      onChange?.(updated);
     } catch {
       // ignore
     } finally {
@@ -151,10 +151,10 @@ export function LASSecuritiesTable({
 
   function handleAddOrUpdate(item: LASSecurityItem) {
     if (editingItem) {
-      onChange(securities.map((s) => (s.id === item.id ? item : s)));
+      onChange?.(securities.map((s) => (s.id === item.id ? item : s)));
       setEditingItem(null);
     } else {
-      onChange([...securities, item]);
+      onChange?.([...securities, item]);
     }
   }
 
@@ -167,7 +167,7 @@ export function LASSecuritiesTable({
 
   function handleDelete(id: string) {
     if (readOnly) return;
-    onChange(securities.filter((s) => s.id !== id));
+    onChange?.(securities.filter((s) => s.id !== id));
   }
 
   function handleOpenAddForProvider(providerId?: string) {
@@ -215,7 +215,7 @@ export function LASSecuritiesTable({
         is_guarantor: provIsGuarantor,
       },
     ];
-    onChange([...securities, ...sampleItems]);
+    onChange?.([...securities, ...sampleItems]);
   }
 
   // Overall Portfolio Rollup Calculations
