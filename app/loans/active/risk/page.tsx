@@ -26,7 +26,7 @@ export default async function LASRiskMonitoringPage() {
             </div>
             <h1 className="mt-2 text-2xl font-bold tracking-tight">LAS Portfolio Risk Monitor</h1>
             <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground sm:text-sm">
-              Manual LAS entry, live equity valuation, price fall tracking, security cover monitoring (**X), and margin call alerts.
+              Manual LAS entry, live equity valuation, % vs disbursement price tracking, security cover monitoring (**X), and margin call alerts.
             </p>
           </div>
           <Link href="/loans/active" className="text-xs font-semibold text-primary hover:underline">View all active facilities</Link>

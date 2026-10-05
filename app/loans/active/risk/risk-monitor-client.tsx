@@ -462,7 +462,7 @@ export function RiskMonitorClient({
           </div>
           <h2 className="text-xl font-bold tracking-tight text-white">LAS Pledged Shares Risk Monitor</h2>
           <p className="text-xs text-slate-300 max-w-2xl">
-            Track pledged share volumes, price-at-disbursement vs live CMP, percentage price fall, required security cover (**X), and automated margin call shortfall triggers.
+            Track pledged share volumes, price-at-disbursement vs live CMP, percentage above/below disbursement price, required security cover (**X), and automated margin call shortfall triggers.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -580,7 +580,7 @@ export function RiskMonitorClient({
               Manual LAS Positions & Real-Time Risk Monitor
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              Live tracking of Pledged Shares, Price @ Disbursement, Price Fall %, Security Cover (**X), and Security Required.
+              Live tracking of Pledged Shares, Price @ Disbursement, % vs Disb Price, Security Cover (**X), and Security Required.
             </CardDescription>
           </div>
 
@@ -620,7 +620,10 @@ export function RiskMonitorClient({
                   <th className="p-3 text-right border-r">Shares Pledged</th>
                   <th className="p-3 text-right border-r">Price @ Disb</th>
                   <th className="p-3 text-right border-r font-bold text-indigo-600 dark:text-indigo-400">Current CMP</th>
-                  <th className="p-3 text-right border-r font-bold">Price Fall By</th>
+                  <th className="p-3 text-right border-r font-bold">
+                    <div>% vs Disb Price</div>
+                    <div className="text-[9px] font-normal text-muted-foreground font-sans">CMP vs Disb</div>
+                  </th>
                   <th className="p-3 text-center border-r whitespace-nowrap">Disb Date</th>
                   <th className="p-3 text-right border-r font-bold">Disb / Loan Amt</th>
                   <th className="p-3 text-center border-r font-bold">Security Cover</th>
@@ -697,21 +700,23 @@ export function RiskMonitorClient({
                           </div>
                         </td>
 
-                        {/* 6. Price Fall By */}
+                        {/* 6. Percentage vs Disbursement Price (CMP vs Price @ Disb) */}
                         <td className="p-3 text-right border-r font-bold">
                           {pos.priceFallPercent !== 0 ? (
                             <span
-                              className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] ${
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono ${
                                 isFalling
                                   ? "bg-red-500/15 text-red-700 dark:text-red-400 border border-red-500/30"
                                   : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30"
                               }`}
                             >
                               {isFalling ? <ArrowDownRight className="size-3 shrink-0" /> : <ArrowUpRight className="size-3 shrink-0" />}
-                              {pos.priceFallPercent > 0 ? `+${pos.priceFallPercent.toFixed(2)}%` : `${pos.priceFallPercent.toFixed(2)}%`}
+                              {pos.priceFallPercent > 0
+                                ? `+${pos.priceFallPercent.toFixed(2)}% Above`
+                                : `${Math.abs(pos.priceFallPercent).toFixed(2)}% Below`}
                             </span>
                           ) : (
-                            <span className="text-muted-foreground">0.00%</span>
+                            <span className="text-muted-foreground text-[11px]">0.00% (At Disb)</span>
                           )}
                         </td>
 
@@ -875,9 +880,13 @@ export function RiskMonitorClient({
                   <strong className="text-indigo-600 dark:text-indigo-400">₹{formatINR(draftCurrentValue, 0)}</strong>
                 </div>
                 <div className="bg-card/80 p-1.5 rounded border">
-                  <span className="text-muted-foreground block text-[10px] font-sans">Price Fall By:</span>
+                  <span className="text-muted-foreground block text-[10px] font-sans">% vs Disb Price:</span>
                   <strong className={draftPriceFall < 0 ? "text-red-600" : "text-emerald-600"}>
-                    {draftPriceFall > 0 ? `+${draftPriceFall.toFixed(1)}%` : `${draftPriceFall.toFixed(1)}%`}
+                    {draftPriceFall > 0
+                      ? `+${draftPriceFall.toFixed(1)}% Above`
+                      : draftPriceFall < 0
+                      ? `${Math.abs(draftPriceFall).toFixed(1)}% Below`
+                      : "0.0% (At Disb)"}
                   </strong>
                 </div>
                 <div className="bg-card/80 p-1.5 rounded border">
@@ -1223,9 +1232,13 @@ export function RiskMonitorClient({
               {quickPriceInput > 0 && (
                 <div className="p-2.5 rounded bg-indigo-50/50 dark:bg-indigo-950/30 border text-[11px] font-mono space-y-1">
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground font-sans">Price Move:</span>
+                    <span className="text-muted-foreground font-sans">% vs Disb Price:</span>
                     <strong className={quickPriceInput < quickPricePosition.priceAtDisbursement ? "text-red-600" : "text-emerald-600"}>
-                      {(((quickPriceInput - quickPricePosition.priceAtDisbursement) / quickPricePosition.priceAtDisbursement) * 100).toFixed(2)}%
+                      {quickPriceInput > quickPricePosition.priceAtDisbursement
+                        ? `+${(((quickPriceInput - quickPricePosition.priceAtDisbursement) / quickPricePosition.priceAtDisbursement) * 100).toFixed(2)}% Above`
+                        : quickPriceInput < quickPricePosition.priceAtDisbursement
+                        ? `${Math.abs(((quickPriceInput - quickPricePosition.priceAtDisbursement) / quickPricePosition.priceAtDisbursement) * 100).toFixed(2)}% Below`
+                        : "0.00% (At Disb)"}
                     </strong>
                   </div>
                   <div className="flex justify-between">

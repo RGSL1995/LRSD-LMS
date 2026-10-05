@@ -1,0 +1,21 @@
+[
+  {
+    "id": "las_1791181408862_z3w8h",
+    "borrower_name": "GP Eco Solutions India",
+    "loan_code": "LRSD009",
+    "security_name": "GP ECO SOLUTIONS INDIA L",
+    "isin": "INE0S7E01015",
+    "symbol": "GPECO",
+    "shares_pledged": 863000,
+    "price_at_disbursement": 295,
+    "current_price": 430,
+    "disbursement_date": "2026-02-05",
+    "disbursed_amount": 100000000,
+    "required_cover": 2.5,
+    "pledgor_name": "Deepak Pandey",
+    "remarks": "",
+    "last_price_updated_at": "2026-10-05T06:23:28.862Z",
+    "created_at": "2026-10-05T06:23:28.862Z",
+    "updated_at": "2026-10-05T06:23:28.862Z"
+  }
+]
