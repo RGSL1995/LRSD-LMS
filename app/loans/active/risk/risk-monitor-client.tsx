@@ -1119,6 +1119,8 @@ export function RiskMonitorClient({
                   <option value={2.25}>2.25x (44.4% LTV)</option>
                   <option value={2.5}>2.50x (40.0% LTV - High Volatility)</option>
                   <option value={3.0}>3.00x (33.3% LTV - Ultra Safe)</option>
+                  <option value={3.5}>3.50x (28.6% LTV - High Margin)</option>
+                  <option value={4.0}>4.00x (25.0% LTV - Conservative)</option>
                 </select>
               </div>
 
@@ -1436,6 +1438,8 @@ export function RiskMonitorClient({
                   <option value={2.25}>2.25x (44.4% LTV)</option>
                   <option value={2.5}>2.50x (40.0% LTV)</option>
                   <option value={3.0}>3.00x (33.3% LTV)</option>
+                  <option value={3.5}>3.50x (28.6% LTV - High Margin)</option>
+                  <option value={4.0}>4.00x (25.0% LTV - Conservative)</option>
                 </select>
               </div>
             </div>

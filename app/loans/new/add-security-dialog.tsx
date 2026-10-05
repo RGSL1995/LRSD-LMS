@@ -599,7 +599,7 @@ export function AddSecurityDialog({
                   Security Cover Multiplier *
                 </Label>
                 <div className="flex items-center gap-1">
-                  {["2.5", "3.0", "4.0", "5.0"].map((cov) => (
+                  {["2.0", "2.5", "3.0", "3.5", "4.0", "5.0"].map((cov) => (
                     <button
                       key={cov}
                       type="button"
