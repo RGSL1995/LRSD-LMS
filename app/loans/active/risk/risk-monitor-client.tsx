@@ -615,7 +615,7 @@ export function RiskMonitorClient({
             <table className="w-full text-xs text-left border-collapse min-w-[1050px]">
               <thead>
                 <tr className="bg-muted/70 border-b border-border text-[11px] font-bold text-foreground">
-                  <th className="p-3 border-r min-w-36">Borrower / Loan Code</th>
+                  <th className="p-3 border-r min-w-48 font-bold">Borrower & Loan Facility</th>
                   <th className="p-3 border-r min-w-40">Pledged Security</th>
                   <th className="p-3 text-right border-r">Shares Pledged</th>
                   <th className="p-3 text-right border-r">Price @ Disb</th>
@@ -649,11 +649,24 @@ export function RiskMonitorClient({
 
                     return (
                       <tr key={pos.id} className="hover:bg-muted/30 transition-colors">
-                        {/* 1. Borrower / Loan Code */}
-                        <td className="p-3 border-r font-sans">
-                          <div className="font-bold text-foreground line-clamp-1">{pos.borrowerName}</div>
-                          <div className="text-[10px] text-muted-foreground font-mono">
-                            {pos.loanCode || "—"}{pos.pledgorName && pos.pledgorName !== "—" ? ` • Pledgor: ${pos.pledgorName}` : ""}
+                        {/* 1. Borrower / Loan Code (Highlighted & Highly Visible) */}
+                        <td className="p-3 border-r font-sans min-w-48">
+                          <div className="flex items-start gap-1.5 mb-1.5">
+                            <Building2 className="size-3.5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+                            <span className="font-extrabold text-[13px] text-foreground tracking-tight leading-snug">
+                              {pos.borrowerName}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 font-mono font-bold text-[11px] bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 shadow-2xs">
+                              <Layers className="size-3" />
+                              {pos.loanCode || "—"}
+                            </span>
+                            {pos.pledgorName && pos.pledgorName !== "—" && (
+                              <span className="text-[10px] text-muted-foreground font-medium bg-muted/60 px-1.5 py-0.5 rounded border">
+                                Pledgor: <strong className="text-foreground">{pos.pledgorName}</strong>
+                              </span>
+                            )}
                           </div>
                         </td>
 
