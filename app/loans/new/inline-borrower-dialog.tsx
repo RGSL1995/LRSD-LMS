@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useEffect, useTransition } from "react";
 import {
   Dialog,
   DialogContent,
@@ -33,9 +33,13 @@ interface InlineBorrowerDialogProps {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  role?: "primary_borrower" | "co_borrower" | "guarantor";
+  role?: "primary_borrower" | "co_borrower" | "guarantor" | "security_provider";
   defaultPan?: string;
-  onSelected: (borrower: BorrowerLookup, guaranteeType?: "personal" | "corporate") => void;
+  onSelected: (
+    borrower: BorrowerLookup,
+    guaranteeType?: "personal" | "corporate",
+    options?: { isGuarantor?: boolean; isSecurityProvider?: boolean }
+  ) => void;
 }
 
 export function InlineBorrowerDialog({
@@ -55,8 +59,19 @@ export function InlineBorrowerDialog({
   const [foundBorrower, setFoundBorrower] = useState<BorrowerLookup | null>(null);
   const [notFoundPan, setNotFoundPan] = useState<string | null>(null);
 
+  // Role capability toggles for Guarantor / Security Provider
+  const [isGuarantor, setIsGuarantor] = useState(role === "guarantor");
+  const [isSecurityProvider, setIsSecurityProvider] = useState(role === "security_provider");
+
   // Guarantee Type (for guarantors)
   const [guaranteeType, setGuaranteeType] = useState<"personal" | "corporate">("personal");
+
+  useEffect(() => {
+    if (open) {
+      setIsGuarantor(role === "guarantor");
+      setIsSecurityProvider(role === "security_provider");
+    }
+  }, [open, role]);
 
   // Create mode form state
   const [entityType, setEntityType] = useState<"individual" | "corporate">("individual");
@@ -81,6 +96,8 @@ export function InlineBorrowerDialog({
     setFoundBorrower(null);
     setNotFoundPan(null);
     setCreateError(null);
+    setIsGuarantor(role === "guarantor");
+    setIsSecurityProvider(role === "security_provider");
     setFullName("");
     setLegalName("");
     setCin("");
@@ -127,6 +144,11 @@ export function InlineBorrowerDialog({
     e.preventDefault();
     setCreateError(null);
 
+    if ((role === "guarantor" || role === "security_provider") && !isGuarantor && !isSecurityProvider) {
+      setCreateError("Please select at least one role: Financial Guarantor and/or Security Provider.");
+      return;
+    }
+
     const activePan = (notFoundPan || pan).trim().toUpperCase();
     if (!activePan) {
       setCreateError("PAN is required.");
@@ -164,7 +186,11 @@ export function InlineBorrowerDialog({
 
       const result = await createBorrowerInline(data);
       if (result.success && result.borrower) {
-        onSelected(result.borrower, guaranteeType);
+        onSelected(
+          result.borrower,
+          isGuarantor ? guaranteeType : undefined,
+          { isGuarantor, isSecurityProvider }
+        );
         resetAll();
         onOpenChange(false);
       } else {
@@ -175,9 +201,17 @@ export function InlineBorrowerDialog({
 
   function handleAttachFound() {
     if (foundBorrower) {
+      if ((role === "guarantor" || role === "security_provider") && !isGuarantor && !isSecurityProvider) {
+        setSearchError("Please select at least one role: Financial Guarantor and/or Security Provider.");
+        return;
+      }
       const derivedGuarantee: "personal" | "corporate" =
-        foundBorrower.borrower_type === "individual" ? "personal" : "corporate";
-      onSelected(foundBorrower, derivedGuarantee);
+        guaranteeType || (foundBorrower.borrower_type === "individual" ? "personal" : "corporate");
+      onSelected(
+        foundBorrower,
+        isGuarantor ? derivedGuarantee : undefined,
+        { isGuarantor, isSecurityProvider }
+      );
       resetAll();
       onOpenChange(false);
     }
@@ -193,7 +227,7 @@ export function InlineBorrowerDialog({
         }
       }}
     >
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-3xl md:max-w-4xl max-h-[90vh] overflow-y-auto w-full">
         <DialogHeader>
           <div className="flex items-center gap-2">
             <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -255,14 +289,110 @@ export function InlineBorrowerDialog({
             {/* If Found in LMS */}
             {foundBorrower && (
               <div className="space-y-3 animate-in fade-in-50">
+                {(role === "guarantor" || role === "security_provider") && (
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                        <ShieldCheck className="size-4 text-primary" />
+                        Obligations & Role on this Facility
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">Select all that apply</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <label
+                        className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                          isGuarantor
+                            ? "border-primary bg-card shadow-2xs"
+                            : "border-border/60 bg-muted/20 opacity-70"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isGuarantor}
+                          onChange={(e) => setIsGuarantor(e.target.checked)}
+                          className="mt-0.5 rounded border-primary text-primary size-4"
+                        />
+                        <div className="space-y-1">
+                          <span className="text-xs font-bold text-foreground block">
+                            🛡️ Financial Guarantor
+                          </span>
+                          <span className="text-[10px] text-muted-foreground block">
+                            Provides Personal or Corporate Guarantee for facility repayment.
+                          </span>
+                          {isGuarantor && (
+                            <div className="flex items-center gap-1.5 pt-0.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setGuaranteeType("personal");
+                                }}
+                                className={`text-[9px] px-2 py-0.5 rounded border transition-colors ${
+                                  guaranteeType === "personal"
+                                    ? "bg-primary text-primary-foreground font-bold border-primary"
+                                    : "bg-muted text-muted-foreground border-border"
+                                }`}
+                              >
+                                Personal Guarantee
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setGuaranteeType("corporate");
+                                }}
+                                className={`text-[9px] px-2 py-0.5 rounded border transition-colors ${
+                                  guaranteeType === "corporate"
+                                    ? "bg-primary text-primary-foreground font-bold border-primary"
+                                    : "bg-muted text-muted-foreground border-border"
+                                }`}
+                              >
+                                Corporate Guarantee
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </label>
+
+                      <label
+                        className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                          isSecurityProvider
+                            ? "border-primary bg-card shadow-2xs"
+                            : "border-border/60 bg-muted/20 opacity-70"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSecurityProvider}
+                          onChange={(e) => setIsSecurityProvider(e.target.checked)}
+                          className="mt-0.5 rounded border-primary text-primary size-4"
+                        />
+                        <div className="space-y-0.5">
+                          <span className="text-xs font-bold text-foreground block">
+                            🏦 Security Provider (Pledgor)
+                          </span>
+                          <span className="text-[10px] text-muted-foreground block">
+                            Pledges equity shares or collateral assets in the security schedule.
+                          </span>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
                 <ExpandableProfileCard
                   borrower={foundBorrower}
                   role={
                     role === "co_borrower"
                       ? "Co-Borrower"
-                      : role === "guarantor"
-                        ? "Guarantor"
-                        : "Primary Borrower"
+                      : isGuarantor && isSecurityProvider
+                        ? "Guarantor & Security Provider"
+                        : isSecurityProvider
+                          ? "Security Provider"
+                          : role === "guarantor"
+                            ? "Guarantor"
+                            : "Primary Borrower"
                   }
                   defaultExpanded={true}
                   extraAction={
@@ -545,6 +675,98 @@ export function InlineBorrowerDialog({
                       maxLength={6}
                     />
                   </div>
+                </div>
+              </div>
+            )}
+
+            {(role === "guarantor" || role === "security_provider") && (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    <ShieldCheck className="size-4 text-primary" />
+                    Obligations & Role on this Facility
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">Select all that apply</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label
+                    className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                      isGuarantor
+                        ? "border-primary bg-card shadow-2xs"
+                        : "border-border/60 bg-muted/20 opacity-70"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isGuarantor}
+                      onChange={(e) => setIsGuarantor(e.target.checked)}
+                      className="mt-0.5 rounded border-primary text-primary size-4"
+                    />
+                    <div className="space-y-1">
+                      <span className="text-xs font-bold text-foreground block">
+                        🛡️ Financial Guarantor
+                      </span>
+                      <span className="text-[10px] text-muted-foreground block">
+                        Provides Personal or Corporate Guarantee for facility repayment.
+                      </span>
+                      {isGuarantor && (
+                        <div className="flex items-center gap-1.5 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setGuaranteeType("personal");
+                            }}
+                            className={`text-[9px] px-2 py-0.5 rounded border transition-colors ${
+                              guaranteeType === "personal"
+                                ? "bg-primary text-primary-foreground font-bold border-primary"
+                                : "bg-muted text-muted-foreground border-border"
+                            }`}
+                          >
+                            Personal Guarantee
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setGuaranteeType("corporate");
+                            }}
+                            className={`text-[9px] px-2 py-0.5 rounded border transition-colors ${
+                              guaranteeType === "corporate"
+                                ? "bg-primary text-primary-foreground font-bold border-primary"
+                                : "bg-muted text-muted-foreground border-border"
+                            }`}
+                          >
+                            Corporate Guarantee
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                      isSecurityProvider
+                        ? "border-primary bg-card shadow-2xs"
+                        : "border-border/60 bg-muted/20 opacity-70"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSecurityProvider}
+                      onChange={(e) => setIsSecurityProvider(e.target.checked)}
+                      className="mt-0.5 rounded border-primary text-primary size-4"
+                    />
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-bold text-foreground block">
+                        🏦 Security Provider (Pledgor)
+                      </span>
+                      <span className="text-[10px] text-muted-foreground block">
+                        Pledges equity shares or collateral assets in the security schedule.
+                      </span>
+                    </div>
+                  </label>
                 </div>
               </div>
             )}

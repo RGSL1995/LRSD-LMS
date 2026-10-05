@@ -2,8 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-
-const BUCKET = "borrower-documents";
+import {
+  uploadDocumentFile,
+  getDocumentSignedUrl,
+  deleteDocumentFile,
+} from "@/lib/storage";
 
 export type DocumentUploadState = { error: string | null };
 
@@ -28,14 +31,20 @@ export async function uploadBorrowerDocument(
     return { error: "Choose a file to upload." };
   }
 
-  const storagePath = `${borrowerId}/${stage}/${category}-${Date.now()}-${file.name}`;
+  if (file.size > 50 * 1024 * 1024) {
+    return { error: "File size exceeds 50MB limit." };
+  }
 
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(storagePath, file, { contentType: file.type });
+  const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+  const storagePath = `${borrowerId}/${stage}/${category}-${Date.now()}-${cleanName}`;
 
-  if (uploadError) {
-    return { error: uploadError.message };
+  const uploadRes = await uploadDocumentFile({
+    storagePath,
+    file,
+  });
+
+  if (!uploadRes.success) {
+    return { error: uploadRes.error || "Failed to upload document." };
   }
 
   const { error: insertError } = await supabase.from("borrower_documents").insert({
@@ -50,7 +59,7 @@ export async function uploadBorrowerDocument(
   });
 
   if (insertError) {
-    await supabase.storage.from(BUCKET).remove([storagePath]);
+    await deleteDocumentFile(storagePath);
     return { error: insertError.message };
   }
 
@@ -64,19 +73,15 @@ export async function deleteBorrowerDocument(formData: FormData) {
   const borrowerId = formData.get("borrower_id") as string;
   const storagePath = formData.get("storage_path") as string;
 
-  await supabase.storage.from(BUCKET).remove([storagePath]);
+  await deleteDocumentFile(storagePath);
   await supabase.from("borrower_documents").delete().eq("id", documentId);
 
   revalidatePath(`/borrowers/${borrowerId}`);
 }
 
 export async function getDocumentUrl(storagePath: string) {
-  const supabase = await createClient();
-  const { data } = await supabase.storage
-    .from(BUCKET)
-    .createSignedUrl(storagePath, 60 * 10);
-
-  return data?.signedUrl ?? null;
+  const res = await getDocumentSignedUrl(storagePath, 60 * 60);
+  return res.url ?? null;
 }
 
 export type BorrowerDocument = {

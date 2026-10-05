@@ -11,6 +11,7 @@ import {
   GST_STATE_MAP,
   type ExtractedCorporateData,
 } from "./pdf-parser";
+import { uploadDocumentFile, downloadDocumentBuffer } from "@/lib/storage";
 
 const BUCKET = "borrower-documents";
 
@@ -42,6 +43,10 @@ export async function parseAndIngestCorporatePdf(
     return { success: false, error: "Please select a PDF file to upload.", data: null };
   }
 
+  if (file.size > 50 * 1024 * 1024) {
+    return { success: false, error: "File size exceeds 50MB limit.", data: null };
+  }
+
   const isPdf =
     file.name.toLowerCase().endsWith(".pdf") ||
     file.type === "application/pdf" ||
@@ -64,8 +69,8 @@ export async function parseAndIngestCorporatePdf(
   if (borrowerId) {
     const storagePath = `${borrowerId}/financial/corporate_report-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
 
-    // Upload to Supabase Storage
-    await supabase.storage.from(BUCKET).upload(storagePath, file, { contentType: file.type });
+    // Upload to storage (AWS S3 if configured, or Supabase Storage)
+    await uploadDocumentFile({ storagePath, file });
 
     // Save document metadata
     await supabase.from("borrower_documents").insert({
@@ -453,9 +458,8 @@ export async function getLatestCorporateReport(
 
         if (isPdf && doc.storage_path) {
           try {
-            const { data: fileData, error } = await supabase.storage.from(BUCKET).download(doc.storage_path);
-            if (!error && fileData) {
-              const buffer = Buffer.from(await fileData.arrayBuffer());
+            const buffer = await downloadDocumentBuffer(doc.storage_path);
+            if (buffer) {
               const parsed = await parseCorporatePdf(buffer);
               if (parsed) return parsed;
             }

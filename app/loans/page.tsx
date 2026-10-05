@@ -2,12 +2,18 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { NavBar } from "@/components/layout/nav-bar";
 import { buttonVariants } from "@/components/ui/button";
+import { LoanSubNav } from "@/components/loans/loan-subnav";
 import { LoansTable, type LoanRow } from "./loans-table";
 import { cn } from "@/lib/utils";
 import { PlusCircle, ArrowLeft } from "lucide-react";
 
 export default async function LoanApplicationsPage() {
   const supabase = await createClient();
+
+  // Fetch count of active facilities for subnav badge
+  const { count: activeCount } = await supabase
+    .from("loans")
+    .select("*", { count: "exact", head: true });
 
   const { data: applications, error } = await supabase
     .from("loan_applications")
@@ -21,6 +27,8 @@ export default async function LoanApplicationsPage() {
        )`,
     )
     .order("created_at", { ascending: false });
+
+  const pipelineCount = applications?.length ?? 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -61,6 +69,14 @@ export default async function LoanApplicationsPage() {
           </div>
         </div>
 
+        {/* Sub-Navigation Pill Switcher */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <LoanSubNav
+            pipelineCount={pipelineCount}
+            activeCount={activeCount ?? 0}
+          />
+        </div>
+
         {error && (
           <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive font-medium">
             {error.message}
@@ -73,3 +89,4 @@ export default async function LoanApplicationsPage() {
     </div>
   );
 }
+

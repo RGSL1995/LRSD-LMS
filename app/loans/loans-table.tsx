@@ -1,5 +1,4 @@
 "use client";
-
 import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
@@ -14,10 +13,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn, unwrapRelation, type Relation } from "@/lib/utils";
-import { Search, FileCheck2, ArrowRight, Eye, CheckCircle2, Clock, FileEdit, AlertCircle } from "lucide-react";
+import { Search, FileCheck2, ArrowRight, Eye, CheckCircle2, Clock, FileEdit, AlertCircle, Pencil } from "lucide-react";
 import { BorrowerAvatar } from "@/components/ui/borrower-avatar";
 import { DeleteLoanDialog } from "./delete-loan-dialog";
-
+ 
 export type EmbeddedBorrower = {
   id?: string;
   borrower_type?: string;
@@ -222,6 +221,14 @@ export function LoansTable({ loans }: { loans: LoanRow[] }) {
                           className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline px-2 py-1 rounded-md hover:bg-primary/5 transition-colors"
                         >
                           Appraisal <ArrowRight className="size-3" />
+                        </Link>
+                        <Link
+                          href={`/loans/${loan.id}/edit`}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground px-2 py-1 rounded-md hover:bg-muted transition-colors"
+                          title="Edit Application"
+                        >
+                          <Pencil className="size-3" />
+                          <span className="hidden sm:inline">Edit</span>
                         </Link>
                         <DeleteLoanDialog
                           loanId={loan.id}

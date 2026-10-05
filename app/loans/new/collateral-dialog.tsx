@@ -94,7 +94,7 @@ export function CollateralDialog({ open, onOpenChange, onAdd }: CollateralDialog
         if (!next) resetForm();
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto w-full">
         <DialogHeader>
           <div className="flex items-center gap-2">
             <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">

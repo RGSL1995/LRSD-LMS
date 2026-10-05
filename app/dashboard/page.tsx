@@ -19,6 +19,7 @@ import {
   ArrowUpRight,
   ShieldCheck,
   CreditCard,
+  Landmark,
 } from "lucide-react";
 
 type EmbeddedBorrower = {
@@ -139,12 +140,22 @@ export default async function DashboardPage() {
             <Link
               href="/loans/new"
               className={cn(
-                buttonVariants({ size: "sm" }),
-                "gap-1.5 h-9 text-xs font-semibold shadow-xs",
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "gap-1.5 h-9 text-xs font-semibold shadow-2xs hover:bg-muted/80",
               )}
             >
-              <PlusCircle className="size-3.5" />
+              <PlusCircle className="size-3.5 text-primary" />
               <span>Originate Loan</span>
+            </Link>
+            <Link
+              href="/loans/active"
+              className={cn(
+                buttonVariants({ size: "sm" }),
+                "gap-1.5 h-9 text-xs font-semibold shadow-xs bg-emerald-600 hover:bg-emerald-700 text-white",
+              )}
+            >
+              <Landmark className="size-3.5" />
+              <span>Active Facilities</span>
             </Link>
           </div>
         </div>

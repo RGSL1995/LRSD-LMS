@@ -2,6 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import {
+  uploadDocumentFile,
+  getDocumentSignedUrl,
+  deleteDocumentFile,
+} from "@/lib/storage";
 
 const BUCKET = "borrower-documents";
 const SIGNED_URL_EXPIRY = 60 * 60 * 24 * 7; // 7 days
@@ -64,11 +69,8 @@ export async function getBorrowerAvatarUrl(borrowerId: string): Promise<string |
       .maybeSingle();
 
     if (doc?.storage_path) {
-      const { data: signed } = await supabase.storage
-        .from(BUCKET)
-        .createSignedUrl(doc.storage_path, SIGNED_URL_EXPIRY);
-
-      if (signed?.signedUrl) return signed.signedUrl;
+      const res = await getDocumentSignedUrl(doc.storage_path, SIGNED_URL_EXPIRY);
+      if (res.success && res.url) return res.url;
     }
   } catch {
     // Ignore error
@@ -111,29 +113,27 @@ export async function uploadBorrowerAvatar(
     return { success: false, error: "Please select a valid image file (PNG, JPG, WebP, or SVG)." };
   }
 
-  // Max 5MB
-  if (file.size > 5 * 1024 * 1024) {
-    return { success: false, error: "Image file must be under 5MB." };
+  // Max 50MB
+  if (file.size > 50 * 1024 * 1024) {
+    return { success: false, error: "Image file must be under 50MB." };
   }
 
   const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
   const storagePath = `${borrowerId}/avatar/${Date.now()}-${cleanName}`;
 
-  // 1. Upload to Supabase Storage
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(storagePath, file, { contentType: file.type || "image/png", upsert: true });
+  // 1. Upload to storage (AWS S3 if configured, or Supabase Storage)
+  const uploadRes = await uploadDocumentFile({
+    storagePath,
+    file,
+  });
 
-  if (uploadError) {
-    return { success: false, error: uploadError.message };
+  if (!uploadRes.success) {
+    return { success: false, error: uploadRes.error || "Upload failed." };
   }
 
   // 2. Generate signed URL for immediate use
-  const { data: signedData } = await supabase.storage
-    .from(BUCKET)
-    .createSignedUrl(storagePath, SIGNED_URL_EXPIRY);
-
-  const signedUrl = signedData?.signedUrl ?? null;
+  const signedRes = await getDocumentSignedUrl(storagePath, SIGNED_URL_EXPIRY);
+  const signedUrl = signedRes.url ?? null;
 
   // 3. Track in borrower_documents table
   try {
@@ -203,7 +203,7 @@ export async function removeBorrowerAvatar(
 
     if (files && files.length > 0) {
       const paths = files.map((f) => `${borrowerId}/avatar/${f.name}`);
-      await supabase.storage.from(BUCKET).remove(paths);
+      await Promise.allSettled(paths.map((p) => deleteDocumentFile(p)));
     }
   } catch {
     // Storage remove failure handled gracefully
@@ -211,6 +211,14 @@ export async function removeBorrowerAvatar(
 
   // 2. Remove from borrower_documents if tagged as photograph or avatar
   try {
+    const { data: docs } = await supabase
+      .from("borrower_documents")
+      .select("storage_path")
+      .eq("borrower_id", borrowerId)
+      .eq("category", "photograph");
+    if (docs) {
+      await Promise.allSettled(docs.map((d) => deleteDocumentFile(d.storage_path)));
+    }
     await supabase
       .from("borrower_documents")
       .delete()

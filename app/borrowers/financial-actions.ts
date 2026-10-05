@@ -3,8 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { parseFinancialReport } from "./financial-parser";
-
-const BUCKET = "borrower-documents";
+import { uploadDocumentFile, deleteDocumentFile } from "@/lib/storage";
 
 export type FinancialUploadState = {
   error: string | null;
@@ -30,14 +29,20 @@ export async function uploadFinancialReport(
     return { error: "Choose a file to upload.", extracted: null };
   }
 
-  const storagePath = `${borrowerId}/financial/financial_report-${Date.now()}-${file.name}`;
+  if (file.size > 50 * 1024 * 1024) {
+    return { error: "File size exceeds 50MB limit.", extracted: null };
+  }
 
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(storagePath, file, { contentType: file.type });
+  const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+  const storagePath = `${borrowerId}/financial/financial_report-${Date.now()}-${cleanName}`;
 
-  if (uploadError) {
-    return { error: uploadError.message, extracted: null };
+  const uploadRes = await uploadDocumentFile({
+    storagePath,
+    file,
+  });
+
+  if (!uploadRes.success) {
+    return { error: uploadRes.error || "Upload failed.", extracted: null };
   }
 
   const { data: document, error: insertDocError } = await supabase
@@ -56,7 +61,7 @@ export async function uploadFinancialReport(
     .single();
 
   if (insertDocError || !document) {
-    await supabase.storage.from(BUCKET).remove([storagePath]);
+    await deleteDocumentFile(storagePath);
     return { error: insertDocError?.message ?? "Failed to save document.", extracted: null };
   }
 

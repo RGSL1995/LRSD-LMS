@@ -1,16 +1,25 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useMemo, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   findBorrowerByPan,
   createWholesaleLoanApplication,
+  updateWholesaleLoanApplication,
   type BorrowerLookup,
   type CreateWholesaleLoanPayload,
+  type UpdateWholesaleLoanPayload,
 } from "@/app/loans/actions";
 import { InlineBorrowerDialog } from "./inline-borrower-dialog";
 import { CollateralDialog, type CollateralItem } from "./collateral-dialog";
+import { LASSecuritiesTable } from "./las-securities-table";
+import {
+  type LASSecurityItem,
+  type SecurityProviderOption,
+  calculateCoverageRatio,
+  getCoverageStatus,
+} from "../las-types";
 import { ExpandableProfileCard } from "@/components/borrowers/expandable-profile-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +43,8 @@ import {
   Users,
   Layers,
   ArrowLeft,
+  Landmark,
+  UserCheck,
 } from "lucide-react";
 
 type LoanTypeOption = "LAS (Loan Against Securities)" | "LAP" | "Project Finance" | "Others";
@@ -45,47 +56,109 @@ const LOAN_TYPE_OPTIONS: LoanTypeOption[] = [
   "Others",
 ];
 
+export type WholesaleLoanInitialData = {
+  applicationCode?: string;
+  primaryBorrower?: BorrowerLookup | null;
+  loanType?: LoanTypeOption;
+  loanTypeOther?: string;
+  requestedAmount?: string | number;
+  tenureMonths?: string | number;
+  purpose?: string;
+  coBorrowers?: BorrowerLookup[];
+  guarantors?: Array<{
+    borrower: BorrowerLookup;
+    guaranteeType: "personal" | "corporate";
+    isSecurityProvider?: boolean;
+  }>;
+  securityProviders?: Array<{
+    borrower: BorrowerLookup;
+    isGuarantor?: boolean;
+    guaranteeType?: "personal" | "corporate";
+  }>;
+  collaterals?: CollateralItem[];
+  lasSecurities?: LASSecurityItem[];
+  status?: string;
+};
+
+export interface NewWholesaleLoanPageProps {
+  initialApplicationCode?: string;
+  mode?: "create" | "edit";
+  applicationId?: string;
+  initialData?: WholesaleLoanInitialData;
+}
+
 export function NewWholesaleLoanPage({
   initialApplicationCode = "",
-}: {
-  initialApplicationCode?: string;
-}) {
+  mode = "create",
+  applicationId,
+  initialData,
+}: NewWholesaleLoanPageProps) {
   const router = useRouter();
   const [isSubmitting, startSubmitting] = useTransition();
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // 1. Application Code
-  const [applicationCode, setApplicationCode] = useState(initialApplicationCode);
+  const [applicationCode, setApplicationCode] = useState(
+    initialData?.applicationCode || initialApplicationCode
+  );
 
   // 2. Primary Borrower Lookup & Verification
-  const [primaryPanInput, setPrimaryPanInput] = useState("");
+  const [primaryPanInput, setPrimaryPanInput] = useState(
+    initialData?.primaryBorrower?.pan || ""
+  );
   const [isSearchingPrimary, startSearchingPrimary] = useTransition();
   const [primarySearchError, setPrimarySearchError] = useState<string | null>(null);
-  const [primaryBorrower, setPrimaryBorrower] = useState<BorrowerLookup | null>(null);
+  const [primaryBorrower, setPrimaryBorrower] = useState<BorrowerLookup | null>(
+    initialData?.primaryBorrower || null
+  );
   const [primaryNotFound, setPrimaryNotFound] = useState(false);
 
   // 3. Facility Terms
-  const [loanType, setLoanType] = useState<LoanTypeOption>("LAP");
-  const [loanTypeOther, setLoanTypeOther] = useState("");
-  const [requestedAmount, setRequestedAmount] = useState<string>("800000000"); // Default 80 Cr
-  const [tenureMonths, setTenureMonths] = useState<string>("72"); // Default 72 months
+  const [loanType, setLoanType] = useState<LoanTypeOption>(
+    initialData?.loanType ||
+      (initialData?.lasSecurities && initialData.lasSecurities.length > 0
+        ? "LAS (Loan Against Securities)"
+        : "LAP")
+  );
+  const [loanTypeOther, setLoanTypeOther] = useState(initialData?.loanTypeOther || "");
+  const [requestedAmount, setRequestedAmount] = useState<string>(
+    initialData?.requestedAmount !== undefined
+      ? String(initialData.requestedAmount)
+      : "800000000"
+  );
+  const [tenureMonths, setTenureMonths] = useState<string>(
+    initialData?.tenureMonths !== undefined ? String(initialData.tenureMonths) : "72"
+  );
   const [purpose, setPurpose] = useState<string>(
-    "Business Expansion, Growth Working Capital need and Completion of project",
+    initialData?.purpose !== undefined
+      ? initialData.purpose
+      : "Business Expansion, Growth Working Capital need and Completion of project"
   );
 
-  // 4. Multi-Party Structure (Co-Borrowers & Guarantors)
-  const [coBorrowers, setCoBorrowers] = useState<BorrowerLookup[]>([]);
+  // 4. Multi-Party Structure (Co-Borrowers, Guarantors & Security Providers)
+  const [coBorrowers, setCoBorrowers] = useState<BorrowerLookup[]>(
+    initialData?.coBorrowers || []
+  );
   const [guarantors, setGuarantors] = useState<
-    Array<{ borrower: BorrowerLookup; guaranteeType: "personal" | "corporate" }>
-  >([]);
+    Array<{ borrower: BorrowerLookup; guaranteeType: "personal" | "corporate"; isSecurityProvider?: boolean }>
+  >(initialData?.guarantors || []);
+  const [securityProviders, setSecurityProviders] = useState<
+    Array<{ borrower: BorrowerLookup; isGuarantor?: boolean; guaranteeType?: "personal" | "corporate" }>
+  >(initialData?.securityProviders || []);
 
   // 5. Collaterals
-  const [collaterals, setCollaterals] = useState<CollateralItem[]>([]);
+  const [collaterals, setCollaterals] = useState<CollateralItem[]>(
+    initialData?.collaterals || []
+  );
+  const [lasSecurities, setLasSecurities] = useState<LASSecurityItem[]>(
+    initialData?.lasSecurities || []
+  );
 
   // Dialog states
   const [primaryDialogOpen, setPrimaryDialogOpen] = useState(false);
   const [coBorrowerDialogOpen, setCoBorrowerDialogOpen] = useState(false);
   const [guarantorDialogOpen, setGuarantorDialogOpen] = useState(false);
+  const [securityProviderDialogOpen, setSecurityProviderDialogOpen] = useState(false);
   const [collateralDialogOpen, setCollateralDialogOpen] = useState(false);
 
   // Primary PAN lookup handler
@@ -150,6 +223,56 @@ export function NewWholesaleLoanPage({
       return;
     }
 
+    if (mode === "edit" && applicationId) {
+      const updatePayload: UpdateWholesaleLoanPayload = {
+        applicationId,
+        application_code: applicationCode.trim(),
+        primary_borrower_id: primaryBorrower.id,
+        requested_amount: amountNum,
+        purpose: purpose.trim(),
+        tenure_months: Number(tenureMonths) || 12,
+        facility_type: loanType,
+        facility_type_other: loanType === "Others" ? loanTypeOther.trim() : undefined,
+        co_borrowers: coBorrowers.map((cb, i) => ({
+          borrower_id: cb.id,
+          order_index: i + 1,
+        })),
+        guarantors: guarantors.map((g, i) => ({
+          borrower_id: g.borrower.id,
+          guarantee_type: g.guaranteeType,
+          is_security_provider: g.isSecurityProvider,
+          order_index: i + 1,
+        })),
+        security_providers: securityProviders.map((sp, i) => ({
+          borrower_id: sp.borrower.id,
+          is_guarantor: sp.isGuarantor,
+          guarantee_type: sp.guaranteeType,
+          order_index: i + 1,
+        })),
+        collaterals: collaterals.map((c) => ({
+          collateral_type: c.collateral_type,
+          charge_type: c.charge_type,
+          property_status: c.property_status,
+          address: c.address,
+          city: c.city,
+          pincode: c.pincode,
+          estimated_value: c.estimated_value,
+          details: c.details,
+        })),
+        las_securities: loanType === "LAS (Loan Against Securities)" ? lasSecurities : undefined,
+      };
+
+      startSubmitting(async () => {
+        const res = await updateWholesaleLoanApplication(updatePayload);
+        if (res.success) {
+          router.push(`/loans/${applicationId}`);
+        } else {
+          setSubmitError(res.error || "Failed to update loan application.");
+        }
+      });
+      return;
+    }
+
     const payload: CreateWholesaleLoanPayload = {
       application_code: applicationCode.trim(),
       primary_borrower_id: primaryBorrower.id,
@@ -165,6 +288,13 @@ export function NewWholesaleLoanPage({
       guarantors: guarantors.map((g, i) => ({
         borrower_id: g.borrower.id,
         guarantee_type: g.guaranteeType,
+        is_security_provider: g.isSecurityProvider,
+        order_index: i + 1,
+      })),
+      security_providers: securityProviders.map((sp, i) => ({
+        borrower_id: sp.borrower.id,
+        is_guarantor: sp.isGuarantor,
+        guarantee_type: sp.guaranteeType,
         order_index: i + 1,
       })),
       collaterals: collaterals.map((c) => ({
@@ -177,6 +307,7 @@ export function NewWholesaleLoanPage({
         estimated_value: c.estimated_value,
         details: c.details,
       })),
+      las_securities: loanType === "LAS (Loan Against Securities)" ? lasSecurities : undefined,
     };
 
     startSubmitting(async () => {
@@ -189,9 +320,129 @@ export function NewWholesaleLoanPage({
     });
   }
 
+  const isLasLoan = loanType === "LAS (Loan Against Securities)";
+  const totalLasMarketValue = lasSecurities.reduce((sum, s) => sum + s.market_value, 0);
+  const totalLasLoanValue = lasSecurities.reduce((sum, s) => sum + (s.loan_value || 0), 0);
+  const effectiveLasBase = amountNum > 0 ? amountNum : totalLasLoanValue;
+  const overallLasCoverage = calculateCoverageRatio(totalLasMarketValue, effectiveLasBase);
+  const lasCoverStatus = getCoverageStatus(overallLasCoverage);
+
   // Calculate total collateral value
-  const totalCollateralValue = collaterals.reduce((sum, c) => sum + (c.estimated_value || 0), 0);
-  const isFormReady = !!primaryBorrower && amountNum > 0 && Number(tenureMonths) > 0;
+  const totalCollateralValue = isLasLoan
+    ? totalLasMarketValue
+    : collaterals.reduce((sum, c) => sum + (c.estimated_value || 0), 0);
+
+  // Available Security Providers pool (Only explicitly registered Security Providers or Guarantors with SP role)
+  // NOTE: Primary Borrower and Co-Borrowers are NOT automatically added as Security Providers.
+  const availableSecurityProviders = useMemo<SecurityProviderOption[]>(() => {
+    const list: SecurityProviderOption[] = [];
+    const addedIds = new Set<string>();
+
+    securityProviders.forEach((sp) => {
+      if (!addedIds.has(sp.borrower.id)) {
+        addedIds.add(sp.borrower.id);
+        list.push({
+          id: sp.borrower.id,
+          name: sp.borrower.displayName,
+          pan: sp.borrower.pan,
+          isSecurityProvider: true,
+          isGuarantor: sp.isGuarantor,
+          guaranteeType: sp.guaranteeType,
+          isPrimary: primaryBorrower?.id === sp.borrower.id,
+        });
+      }
+    });
+
+    guarantors.forEach((g) => {
+      if (g.isSecurityProvider) {
+        if (!addedIds.has(g.borrower.id)) {
+          addedIds.add(g.borrower.id);
+          list.push({
+            id: g.borrower.id,
+            name: g.borrower.displayName,
+            pan: g.borrower.pan,
+            isGuarantor: true,
+            guaranteeType: g.guaranteeType,
+            isSecurityProvider: true,
+            isPrimary: primaryBorrower?.id === g.borrower.id,
+          });
+        } else {
+          const item = list.find((x) => x.id === g.borrower.id);
+          if (item) {
+            item.isGuarantor = true;
+            item.guaranteeType = g.guaranteeType;
+            item.isSecurityProvider = true;
+          }
+        }
+      }
+    });
+
+    return list;
+  }, [primaryBorrower, securityProviders, guarantors]);
+
+  // Unified list of all parties attached in Section 3 (Guarantors & Security Providers)
+  const attachedObligors = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        borrower: BorrowerLookup;
+        isGuarantor: boolean;
+        guaranteeType?: "personal" | "corporate";
+        isSecurityProvider: boolean;
+      }
+    >();
+
+    guarantors.forEach((g) => {
+      map.set(g.borrower.id, {
+        borrower: g.borrower,
+        isGuarantor: true,
+        guaranteeType: g.guaranteeType,
+        isSecurityProvider: Boolean(g.isSecurityProvider),
+      });
+    });
+
+    securityProviders.forEach((sp) => {
+      const existing = map.get(sp.borrower.id);
+      if (existing) {
+        existing.isSecurityProvider = true;
+        if (sp.isGuarantor) existing.isGuarantor = true;
+        if (sp.guaranteeType) existing.guaranteeType = sp.guaranteeType;
+      } else {
+        map.set(sp.borrower.id, {
+          borrower: sp.borrower,
+          isGuarantor: Boolean(sp.isGuarantor),
+          guaranteeType: sp.guaranteeType,
+          isSecurityProvider: true,
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [guarantors, securityProviders]);
+
+  const suggestedPledgorNames = availableSecurityProviders.map((p) => p.name);
+
+  function handleLasSecuritiesChange(items: LASSecurityItem[]) {
+    setLasSecurities(items);
+    // If a security is added for the primary borrower, ensure they are registered as a Security Provider
+    if (primaryBorrower && items.some((s) => s.pledgor_borrower_id === primaryBorrower.id)) {
+      setSecurityProviders((prev) => {
+        if (prev.some((sp) => sp.borrower.id === primaryBorrower.id)) return prev;
+        return [
+          ...prev,
+          {
+            borrower: primaryBorrower,
+            isGuarantor: false,
+          },
+        ];
+      });
+    }
+  }
+
+  const isFormReady =
+    !!primaryBorrower &&
+    amountNum > 0 &&
+    Number(tenureMonths) > 0;
 
   return (
     <div className="min-h-screen bg-muted/20 pb-28">
@@ -200,19 +451,26 @@ export function NewWholesaleLoanPage({
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
-              href="/loans"
+              href={mode === "edit" && applicationId ? `/loans/${applicationId}` : "/loans"}
               className="text-xs font-semibold text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
             >
               <ArrowLeft className="size-3.5" />
-              <span className="hidden sm:inline">Pipeline</span>
+              <span className="hidden sm:inline">
+                {mode === "edit" ? "Back to Dossier" : "Pipeline"}
+              </span>
             </Link>
             <span className="text-muted-foreground/40">|</span>
             <div>
               <h1 className="text-sm sm:text-base font-bold tracking-tight text-foreground flex items-center gap-2">
-                New Loan Origination
+                {mode === "edit" ? "Edit Loan Application" : "New Loan Origination"}
                 <Badge variant="outline" className="font-mono text-[10px]">
                   {applicationCode || "Draft"}
                 </Badge>
+                {mode === "edit" && initialData?.status && (
+                  <Badge variant="secondary" className="capitalize text-[10px]">
+                    {initialData.status.replace(/_/g, " ")}
+                  </Badge>
+                )}
               </h1>
             </div>
           </div>
@@ -228,12 +486,12 @@ export function NewWholesaleLoanPage({
               {isSubmitting ? (
                 <>
                   <Loader2 className="size-3.5 animate-spin" />
-                  Submitting...
+                  {mode === "edit" ? "Saving..." : "Submitting..."}
                 </>
               ) : (
                 <>
                   <Check className="size-3.5" />
-                  Submit Application
+                  {mode === "edit" ? "Save Changes" : "Submit Application"}
                 </>
               )}
             </Button>
@@ -282,16 +540,18 @@ export function NewWholesaleLoanPage({
                   <Label htmlFor="app_code_input" className="text-xs font-semibold">
                     Application Code *
                   </Label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const rand = Math.floor(1000 + Math.random() * 9000);
-                      setApplicationCode(`LA-${new Date().getFullYear()}-${rand}`);
-                    }}
-                    className="text-[11px] text-primary hover:underline font-medium inline-flex items-center gap-1"
-                  >
-                    <Sparkles className="size-3" /> Auto-generate
-                  </button>
+                  {mode !== "edit" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rand = Math.floor(1000 + Math.random() * 9000);
+                        setApplicationCode(`LA-${new Date().getFullYear()}-${rand}`);
+                      }}
+                      className="text-[11px] text-primary hover:underline font-medium inline-flex items-center gap-1"
+                    >
+                      <Sparkles className="size-3" /> Auto-generate
+                    </button>
+                  )}
                 </div>
                 <Input
                   id="app_code_input"
@@ -299,14 +559,15 @@ export function NewWholesaleLoanPage({
                   onChange={(e) => setApplicationCode(e.target.value)}
                   placeholder="e.g. LA-2026-0001"
                   className="font-mono h-9 text-xs sm:text-sm"
+                  disabled={mode === "edit"}
                   required
                 />
               </div>
 
-              {/* Primary Applicant PAN Lookup */}
+              {/* Primary Applicant Lookup (Application #, PAN, or Borrower Code) */}
               <div className="space-y-1.5">
                 <Label htmlFor="primary_pan_input" className="text-xs font-semibold">
-                  Primary Applicant PAN *
+                  Primary Applicant (Application #, PAN, or Borrower ID) *
                 </Label>
                 <div className="flex gap-2">
                   <Input
@@ -323,9 +584,9 @@ export function NewWholesaleLoanPage({
                         handleSearchPrimaryPan();
                       }
                     }}
-                    placeholder="e.g. ACDFA1362N"
+                    placeholder="e.g. LA-2026-0001, ACDFA1362N, or BRW-..."
                     className="font-mono uppercase tracking-wider h-9 text-xs sm:text-sm"
-                    maxLength={10}
+                    maxLength={35}
                     disabled={!!primaryBorrower}
                   />
                   {!primaryBorrower ? (
@@ -652,139 +913,218 @@ export function NewWholesaleLoanPage({
         </Card>
 
         {/* ========================================================= */}
-        {/* SECTION 3: Guarantors (Credit Enhancement) */}
+        {/* SECTION 3: Guarantors & Security Providers */}
         {/* ========================================================= */}
         <Card className="shadow-xs border-border/80">
           <CardHeader className="pb-4 border-b">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-start gap-3">
                 <div className="p-2 rounded-lg bg-primary/10 text-primary mt-0.5">
                   <Users className="size-4" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-bold">3. Guarantors (Credit Enhancement)</CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">Optional</Badge>
+                    <CardTitle className="text-base font-bold">3. Guarantors & Security Providers</CardTitle>
+                    <Badge variant="secondary" className="text-[10px]">Credit Enhancement</Badge>
                   </div>
                   <CardDescription className="text-xs mt-0.5">
-                    Attach personal or corporate guarantors by PAN to secure this loan facility.
+                    Attach financial guarantors (Personal/Corporate Guarantee) and security providers (pledging collateral/shares).
                   </CardDescription>
                 </div>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setGuarantorDialogOpen(true)}
-                className="h-8 text-xs gap-1.5"
-              >
-                <Plus className="size-3.5" />
-                Add Guarantor
-              </Button>
-            </div>
-          </CardHeader>
-
-          <CardContent className="pt-5 space-y-4">
-            {guarantors.length === 0 ? (
-              <div className="p-4 rounded-xl border border-dashed border-border/80 text-center text-xs text-muted-foreground bg-muted/10">
-                No guarantors attached. Click &quot;Add Guarantor&quot; to search and add by PAN.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {guarantors.map((g, idx) => (
-                  <ExpandableProfileCard
-                    key={g.borrower.id}
-                    borrower={g.borrower}
-                    role="Guarantor"
-                    roleIndex={idx + 1}
-                    guaranteeType={g.guaranteeType}
-                    onRemove={() =>
-                      setGuarantors((prev) => prev.filter((item) => item.borrower.id !== g.borrower.id))
-                    }
-                  />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ========================================================= */}
-        {/* SECTION 4: Collateral Assets */}
-        {/* ========================================================= */}
-        <Card className="shadow-xs border-border/80">
-          <CardHeader className="pb-4 border-b">
-            <div className="flex items-center justify-between">
-              <div className="flex items-start gap-3">
-                <div className="p-2 rounded-lg bg-primary/10 text-primary mt-0.5">
-                  <ShieldCheck className="size-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-bold">4. Pledged Collaterals</CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">Optional</Badge>
-                  </div>
-                  <CardDescription className="text-xs mt-0.5">
-                    Pledge immovable properties, commercial assets, or liquid securities against this facility.
-                  </CardDescription>
-                </div>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setCollateralDialogOpen(true)}
-                className="h-8 text-xs gap-1.5 shrink-0"
-              >
-                <Plus className="size-3.5" />
-                Add Collateral
-              </Button>
-            </div>
-          </CardHeader>
-
-          <CardContent className="pt-5 space-y-4">
-            {collaterals.length === 0 ? (
-              <div className="p-4 rounded-xl border border-dashed border-border/80 text-center text-xs text-muted-foreground bg-muted/10">
-                No collateral properties added yet. Click &quot;Add Collateral&quot; to record pledged immovable or liquid assets.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {collaterals.map((c) => (
-                  <div
-                    key={c.id}
-                    className="p-3 rounded-lg border bg-card border-border/70 flex items-start justify-between gap-3"
+              <div className="flex items-center gap-2 flex-wrap">
+                {primaryBorrower && !securityProviders.some((sp) => sp.borrower.id === primaryBorrower.id) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSecurityProviders((prev) => [
+                        ...prev,
+                        {
+                          borrower: primaryBorrower,
+                          isGuarantor: false,
+                        },
+                      ]);
+                    }}
+                    className="h-8 text-xs gap-1.5 border-dashed text-primary hover:bg-primary/5"
                   >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-xs text-foreground">{c.collateral_type}</span>
-                        <Badge variant="secondary" className="text-[10px] font-mono">
-                          {c.charge_type.replace(/_/g, " ")}
-                        </Badge>
-                        <Badge variant="outline" className="text-[10px]">
-                          {c.property_status}
-                        </Badge>
-                        <span className="text-xs font-bold text-primary font-mono ml-1">
-                          ₹ {c.estimated_value.toLocaleString("en-IN")}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground">📍 {c.address} {c.city ? `, ${c.city}` : ""}</p>
-                      {c.details && <p className="text-[11px] text-muted-foreground italic">Note: {c.details}</p>}
-                    </div>
+                    <UserCheck className="size-3.5 text-primary" />
+                    + Add Primary Borrower as Pledgor
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSecurityProviderDialogOpen(true)}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  <Plus className="size-3.5" />
+                  + Security Provider
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setGuarantorDialogOpen(true)}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  <Plus className="size-3.5" />
+                  + Guarantor
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
 
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => setCollaterals((prev) => prev.filter((item) => item.id !== c.id))}
-                      className="text-muted-foreground hover:text-destructive h-7 px-2 shrink-0"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                ))}
+          <CardContent className="pt-5 space-y-4">
+            {attachedObligors.length === 0 ? (
+              <div className="p-4 rounded-xl border border-dashed border-border/80 text-center text-xs text-muted-foreground bg-muted/10">
+                No guarantors or security providers attached yet. Click above to search by PAN or register inline.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {attachedObligors.map((party, idx) => {
+                  const isDual = party.isGuarantor && party.isSecurityProvider;
+                  const roleLabel = isDual
+                    ? "Guarantor & Security Provider"
+                    : party.isSecurityProvider
+                      ? "Security Provider"
+                      : "Guarantor";
+
+                  return (
+                    <ExpandableProfileCard
+                      key={party.borrower.id}
+                      borrower={party.borrower}
+                      role={roleLabel}
+                      roleIndex={idx + 1}
+                      guaranteeType={party.guaranteeType}
+                      onRemove={() => {
+                        setGuarantors((prev) => prev.filter((item) => item.borrower.id !== party.borrower.id));
+                        setSecurityProviders((prev) => prev.filter((item) => item.borrower.id !== party.borrower.id));
+                      }}
+                    />
+                  );
+                })}
               </div>
             )}
           </CardContent>
         </Card>
+
+        {/* ========================================================= */}
+        {/* SECTION 4: Pledged Collaterals / LAS Securities */}
+        {/* ========================================================= */}
+        {loanType === "LAS (Loan Against Securities)" ? (
+          <div className="space-y-4">
+            <LASSecuritiesTable
+              securities={lasSecurities}
+              onChange={handleLasSecuritiesChange}
+              requestedLoanAmount={amountNum}
+              providers={availableSecurityProviders}
+              onAddNewProvider={() => setSecurityProviderDialogOpen(true)}
+              suggestedPledgors={suggestedPledgorNames}
+              primaryBorrower={
+                primaryBorrower
+                  ? {
+                      id: primaryBorrower.id,
+                      name: primaryBorrower.displayName,
+                      pan: primaryBorrower.pan,
+                      isPrimary: true,
+                      isSecurityProvider: true,
+                    }
+                  : null
+              }
+              onAddPrimaryBorrowerAsProvider={() => {
+                if (!primaryBorrower) return;
+                setSecurityProviders((prev) => {
+                  if (prev.some((sp) => sp.borrower.id === primaryBorrower.id)) return prev;
+                  return [
+                    ...prev,
+                    {
+                      borrower: primaryBorrower,
+                      isGuarantor: false,
+                    },
+                  ];
+                });
+              }}
+            />
+          </div>
+        ) : (
+          <Card className="shadow-xs border-border/80">
+            <CardHeader className="pb-4 border-b">
+              <div className="flex items-center justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-primary/10 text-primary mt-0.5">
+                    <ShieldCheck className="size-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-base font-bold">4. Pledged Collaterals</CardTitle>
+                      <Badge variant="secondary" className="text-[10px]">Optional</Badge>
+                    </div>
+                    <CardDescription className="text-xs mt-0.5">
+                      Pledge immovable properties, commercial assets, or liquid securities against this facility.
+                    </CardDescription>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCollateralDialogOpen(true)}
+                  className="h-8 text-xs gap-1.5 shrink-0"
+                >
+                  <Plus className="size-3.5" />
+                  Add Collateral
+                </Button>
+              </div>
+            </CardHeader>
+
+            <CardContent className="pt-5 space-y-4">
+              {collaterals.length === 0 ? (
+                <div className="p-4 rounded-xl border border-dashed border-border/80 text-center text-xs text-muted-foreground bg-muted/10">
+                  No collateral properties added yet. Click &quot;Add Collateral&quot; to record pledged immovable or liquid assets.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {collaterals.map((c) => (
+                    <div
+                      key={c.id}
+                      className="p-3 rounded-lg border bg-card border-border/70 flex items-start justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-xs text-foreground">{c.collateral_type}</span>
+                          <Badge variant="secondary" className="text-[10px] font-mono">
+                            {c.charge_type.replace(/_/g, " ")}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            {c.property_status}
+                          </Badge>
+                          <span className="text-xs font-bold text-primary font-mono ml-1">
+                            ₹ {c.estimated_value.toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">📍 {c.address} {c.city ? `, ${c.city}` : ""}</p>
+                        {c.details && <p className="text-[11px] text-muted-foreground italic">Note: {c.details}</p>}
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setCollaterals((prev) => prev.filter((item) => item.id !== c.id))}
+                        className="text-muted-foreground hover:text-destructive h-7 px-2 shrink-0"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* ========================================================= */}
         {/* SECTION 5: Origination Dossier Summary & Final Submission */}
@@ -837,11 +1177,17 @@ export function NewWholesaleLoanPage({
                 <span className="font-medium text-foreground">{guarantors.length} Guarantees</span>
               </div>
               <div>
-                <span className="text-muted-foreground block text-[11px]">Collaterals Pledged</span>
-                <span className="font-medium text-foreground">{collaterals.length} Assets</span>
+                <span className="text-muted-foreground block text-[11px]">
+                  Collaterals Pledged
+                </span>
+                <span className="font-medium text-foreground">
+                  {collaterals.length} Assets
+                </span>
               </div>
               <div>
-                <span className="text-muted-foreground block text-[11px]">Total Collateral Value</span>
+                <span className="text-muted-foreground block text-[11px]">
+                  Total Collateral Value
+                </span>
                 <span className="font-mono font-bold text-foreground">
                   ₹ {totalCollateralValue.toLocaleString("en-IN")}
                 </span>
@@ -861,7 +1207,7 @@ export function NewWholesaleLoanPage({
 
               <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
                 <Link
-                  href="/loans"
+                  href={mode === "edit" && applicationId ? `/loans/${applicationId}` : "/loans"}
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-2"
                 >
                   Cancel
@@ -875,12 +1221,12 @@ export function NewWholesaleLoanPage({
                   {isSubmitting ? (
                     <>
                       <Loader2 className="size-3.5 animate-spin" />
-                      Creating Application...
+                      {mode === "edit" ? "Saving Changes..." : "Creating Application..."}
                     </>
                   ) : (
                     <>
                       <Check className="size-3.5" />
-                      Create & Submit Application
+                      {mode === "edit" ? "Save Changes" : "Create & Submit Application"}
                     </>
                   )}
                 </Button>
@@ -951,14 +1297,71 @@ export function NewWholesaleLoanPage({
         open={guarantorDialogOpen}
         onOpenChange={setGuarantorDialogOpen}
         title="Add Guarantor"
-        description="Enter PAN number to verify and attach a guarantor to this loan application."
+        description="Enter PAN number to verify and attach a guarantor or security provider to this facility."
         role="guarantor"
-        onSelected={(borrower, guaranteeType) => {
-          if (!guarantors.some((g) => g.borrower.id === borrower.id)) {
-            setGuarantors((prev) => [
-              ...prev,
-              { borrower, guaranteeType: guaranteeType || "personal" },
-            ]);
+        onSelected={(borrower, guaranteeType, options) => {
+          const isG = options?.isGuarantor !== false;
+          const isSP = Boolean(options?.isSecurityProvider);
+
+          if (isG) {
+            setGuarantors((prev) => {
+              if (prev.some((g) => g.borrower.id === borrower.id)) {
+                return prev.map((g) =>
+                  g.borrower.id === borrower.id
+                    ? { ...g, guaranteeType: guaranteeType || g.guaranteeType, isSecurityProvider: isSP }
+                    : g
+                );
+              }
+              return [
+                ...prev,
+                {
+                  borrower,
+                  guaranteeType: guaranteeType || (borrower.borrower_type === "individual" ? "personal" : "corporate"),
+                  isSecurityProvider: isSP,
+                },
+              ];
+            });
+          }
+
+          if (isSP) {
+            setSecurityProviders((prev) => {
+              if (prev.some((p) => p.borrower.id === borrower.id)) return prev;
+              return [...prev, { borrower, isGuarantor: isG, guaranteeType }];
+            });
+          }
+        }}
+      />
+
+      {/* Dialog for Security Provider lookup & creation */}
+      <InlineBorrowerDialog
+        open={securityProviderDialogOpen}
+        onOpenChange={setSecurityProviderDialogOpen}
+        title="Register Security Provider (Pledgor)"
+        description="Enter PAN number to verify and attach a security provider pledging shares or collateral."
+        role="security_provider"
+        onSelected={(borrower, guaranteeType, options) => {
+          const isSP = options?.isSecurityProvider !== false;
+          const isG = Boolean(options?.isGuarantor);
+
+          if (isSP) {
+            setSecurityProviders((prev) => {
+              if (prev.some((p) => p.borrower.id === borrower.id)) return prev;
+              return [...prev, { borrower, isGuarantor: isG, guaranteeType }];
+            });
+          }
+
+          if (isG) {
+            setGuarantors((prev) => {
+              if (prev.some((g) => g.borrower.id === borrower.id)) return prev;
+              return [
+                ...prev,
+                {
+                  borrower,
+                  guaranteeType: guaranteeType || (borrower.borrower_type === "individual" ? "personal" : "corporate"),
+                  isSecurityProvider: isSP,
+                },
+              ];
+            });
           }
         }}
       />

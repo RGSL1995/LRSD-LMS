@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { getDocumentSignedUrl } from "@/lib/storage";
 import { NavBar } from "@/components/layout/nav-bar";
 import { buttonVariants } from "@/components/ui/button";
 import { BorrowersTable, type BorrowerRow } from "./borrowers-table";
@@ -49,11 +50,9 @@ export default async function BorrowersPage() {
 
       await Promise.all(
         Array.from(latestDocPerBorrower.entries()).map(async ([bId, path]) => {
-          const { data: signed } = await supabase.storage
-            .from(BUCKET)
-            .createSignedUrl(path, 60 * 60 * 24);
-          if (signed?.signedUrl) {
-            avatarUrlMap[bId] = signed.signedUrl;
+          const res = await getDocumentSignedUrl(path, 60 * 60 * 24);
+          if (res.success && res.url) {
+            avatarUrlMap[bId] = res.url;
           }
         }),
       );

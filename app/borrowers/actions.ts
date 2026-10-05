@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { deleteDocumentFile } from "@/lib/storage";
 
 export type BorrowerFormState = { error: string | null };
 export type CreateBorrowerState = { error: string | null; borrowerId: string | null };
@@ -553,9 +554,7 @@ export async function deleteBorrower(
 
     if (docs && docs.length > 0) {
       const paths = docs.map((d) => d.storage_path).filter(Boolean);
-      if (paths.length > 0) {
-        await supabase.storage.from("borrower-documents").remove(paths);
-      }
+      await Promise.allSettled(paths.map((p) => deleteDocumentFile(p)));
     }
 
     // Explicitly delete child relations in case RLS or cascades are restricted

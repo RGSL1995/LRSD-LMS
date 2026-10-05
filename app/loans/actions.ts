@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 
 import { unwrapRelation } from "@/lib/utils";
 import { getBorrowerAvatarUrl } from "@/app/borrowers/avatar-actions";
+import { type LASSecurityItem } from "./las-types";
 
 export type BorrowerLookup = {
   id: string;
@@ -203,7 +204,38 @@ async function resolveBorrowerById(borrowerId: string, fallbackPan: string): Pro
 
 export async function findBorrowerByPan(pan: string): Promise<BorrowerLookup | null> {
   const supabase = await createClient();
-  const cleanPan = pan.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const rawInput = pan.trim();
+  if (!rawInput) return null;
+
+  const upperInput = rawInput.toUpperCase();
+
+  // 0A. Check if input matches a Loan Application Number (e.g. APP-2026-0001)
+  const { data: appMatch } = await supabase
+    .from("loan_applications")
+    .select("borrower_id, application_code, status")
+    .ilike("application_code", upperInput)
+    .limit(1)
+    .maybeSingle();
+
+  if (appMatch?.borrower_id) {
+    console.log("[findBorrowerByPan] Matched loan application:", appMatch.application_code, "borrower_id:", appMatch.borrower_id);
+    return resolveBorrowerById(appMatch.borrower_id, "");
+  }
+
+  // 0B. Check if input matches a Borrower Code (e.g. BRW-XXXXXX)
+  const { data: brwMatch } = await supabase
+    .from("borrowers")
+    .select("id, borrower_code")
+    .ilike("borrower_code", upperInput)
+    .limit(1)
+    .maybeSingle();
+
+  if (brwMatch?.id) {
+    console.log("[findBorrowerByPan] Matched borrower code:", brwMatch.borrower_code, "id:", brwMatch.id);
+    return resolveBorrowerById(brwMatch.id, "");
+  }
+
+  const cleanPan = upperInput.replace(/[^A-Z0-9]/g, "");
   if (!cleanPan) return null;
 
   const variations = getPanVariations(cleanPan);
@@ -211,6 +243,7 @@ export async function findBorrowerByPan(pan: string): Promise<BorrowerLookup | n
 
   // 1. Check borrowers table directly
   for (const v of variations) {
+
     const { data: b } = await supabase
       .from("borrowers")
       .select("id")
@@ -486,6 +519,13 @@ export type CreateWholesaleLoanPayload = {
   guarantors?: Array<{
     borrower_id: string;
     guarantee_type?: "personal" | "corporate" | "unconditional" | "limited" | null;
+    is_security_provider?: boolean;
+    order_index?: number;
+  }>;
+  security_providers?: Array<{
+    borrower_id: string;
+    is_guarantor?: boolean;
+    guarantee_type?: "personal" | "corporate" | null;
     order_index?: number;
   }>;
   collaterals?: Array<{
@@ -498,6 +538,7 @@ export type CreateWholesaleLoanPayload = {
     estimated_value?: number;
     details?: string;
   }>;
+  las_securities?: LASSecurityItem[];
 };
 
 export async function createWholesaleLoanApplication(
@@ -583,10 +624,12 @@ async function processPartiesAndFinish(
   const partiesToInsert: Array<{
     loan_application_id: string;
     borrower_id: string;
-    party_role: "primary_borrower" | "co_borrower" | "guarantor";
+    party_role: "primary_borrower" | "co_borrower" | "guarantor" | "security_provider";
     guarantee_type: string | null;
     is_primary: boolean;
     order_index: number;
+    is_guarantor?: boolean;
+    is_security_provider?: boolean;
   }> = [];
 
   // Primary Borrower
@@ -597,6 +640,8 @@ async function processPartiesAndFinish(
     guarantee_type: null,
     is_primary: true,
     order_index: 0,
+    is_guarantor: false,
+    is_security_provider: false,
   });
 
   // Co-Borrowers
@@ -610,6 +655,8 @@ async function processPartiesAndFinish(
           guarantee_type: null,
           is_primary: false,
           order_index: idx + 1,
+          is_guarantor: false,
+          is_security_provider: false,
         });
       }
     });
@@ -626,7 +673,36 @@ async function processPartiesAndFinish(
           guarantee_type: g.guarantee_type || "personal",
           is_primary: false,
           order_index: idx + 1,
+          is_guarantor: true,
+          is_security_provider: Boolean(g.is_security_provider),
         });
+      }
+    });
+  }
+
+  // Security Providers (if not already added as guarantor)
+  if (payload.security_providers && payload.security_providers.length > 0) {
+    payload.security_providers.forEach((sp, idx) => {
+      if (sp.borrower_id) {
+        const existing = partiesToInsert.find((p) => p.borrower_id === sp.borrower_id);
+        if (existing) {
+          existing.is_security_provider = true;
+          if (sp.is_guarantor) {
+            existing.is_guarantor = true;
+            existing.guarantee_type = sp.guarantee_type || existing.guarantee_type || "personal";
+          }
+        } else {
+          partiesToInsert.push({
+            loan_application_id: applicationId,
+            borrower_id: sp.borrower_id,
+            party_role: "security_provider",
+            guarantee_type: sp.is_guarantor ? (sp.guarantee_type || "personal") : null,
+            is_primary: false,
+            order_index: (payload.guarantors?.length || 0) + idx + 1,
+            is_guarantor: Boolean(sp.is_guarantor),
+            is_security_provider: true,
+          });
+        }
       }
     });
   }
@@ -638,19 +714,73 @@ async function processPartiesAndFinish(
     console.warn("Could not insert loan_application_parties (migration 0011 might be pending):", err);
   }
 
-  // Collaterals (if any)
+  // Collaterals & LAS Securities (if any)
+  const collateralsToInsert: Array<{
+    loan_application_id: string;
+    collateral_type: string;
+    charge_type: string | null;
+    property_status: string | null;
+    address: string | null;
+    city: string | null;
+    pincode: string | null;
+    estimated_value: number | null;
+    details: string | null;
+    pledgor_borrower_id?: string | null;
+    pledgor_name?: string | null;
+    pledgor_pan?: string | null;
+  }> = [];
+
   if (payload.collaterals && payload.collaterals.length > 0) {
-    const collateralsToInsert = payload.collaterals.map((c) => ({
-      loan_application_id: applicationId,
-      collateral_type: c.collateral_type,
-      charge_type: c.charge_type || null,
-      property_status: c.property_status || null,
-      address: c.address || null,
-      city: c.city || null,
-      pincode: c.pincode || null,
-      estimated_value: c.estimated_value || null,
-      details: c.details || null,
-    }));
+    for (const c of payload.collaterals) {
+      collateralsToInsert.push({
+        loan_application_id: applicationId,
+        collateral_type: c.collateral_type,
+        charge_type: c.charge_type || null,
+        property_status: c.property_status || null,
+        address: c.address || null,
+        city: c.city || null,
+        pincode: c.pincode || null,
+        estimated_value: c.estimated_value || null,
+        details: c.details || null,
+      });
+    }
+  }
+
+  if (payload.las_securities && payload.las_securities.length > 0) {
+    for (const s of payload.las_securities) {
+      collateralsToInsert.push({
+        loan_application_id: applicationId,
+        collateral_type: "Equity Shares",
+        charge_type: "Pledge",
+        property_status: "Liquid Securities",
+        address: `${s.security_name} (ISIN: ${s.isin})`,
+        city: s.pledgor_name,
+        pincode: null,
+        estimated_value: s.market_value,
+        details: JSON.stringify(s),
+      });
+    }
+
+    // Attempt resilient insert into loan_pledged_securities if table exists
+    try {
+      const pledgedRows = payload.las_securities.map((s) => ({
+        loan_application_id: applicationId,
+        security_name: s.security_name,
+        isin: s.isin,
+        quantity: s.quantity,
+        cmp: s.cmp,
+        market_value: s.market_value,
+        security_cover: s.security_cover,
+        loan_value: s.loan_value,
+        pledgor_name: s.pledgor_name,
+      }));
+      await supabase.from("loan_pledged_securities").insert(pledgedRows);
+    } catch {
+      // ignore if table not created
+    }
+  }
+
+  if (collateralsToInsert.length > 0) {
     try {
       await supabase.from("loan_collaterals").insert(collateralsToInsert);
     } catch (err) {
@@ -935,3 +1065,291 @@ export async function deleteLoanApplication(
   }
 }
 
+export type UpdateWholesaleLoanPayload = {
+  applicationId: string;
+  application_code?: string;
+  primary_borrower_id?: string;
+  requested_amount: number;
+  purpose: string;
+  tenure_months: number;
+  facility_type: "LAS (Loan Against Securities)" | "LAP" | "Project Finance" | "Others";
+  facility_type_other?: string;
+  co_borrowers?: Array<{
+    borrower_id: string;
+    order_index?: number;
+  }>;
+  guarantors?: Array<{
+    borrower_id: string;
+    guarantee_type?: "personal" | "corporate" | "unconditional" | "limited" | null;
+    is_security_provider?: boolean;
+    order_index?: number;
+  }>;
+  security_providers?: Array<{
+    borrower_id: string;
+    is_guarantor?: boolean;
+    guarantee_type?: "personal" | "corporate" | null;
+    order_index?: number;
+  }>;
+  collaterals?: Array<{
+    collateral_type: string;
+    charge_type?: string;
+    property_status?: string;
+    address?: string;
+    city?: string;
+    pincode?: string;
+    estimated_value?: number;
+    details?: string;
+  }>;
+  las_securities?: LASSecurityItem[];
+};
+
+export async function updateWholesaleLoanApplication(
+  payload: UpdateWholesaleLoanPayload
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { success: false, error: "Unauthorized. Please log in." };
+  if (!payload.applicationId) return { success: false, error: "Application ID is required." };
+
+  // 1. Check if booked into an active facility (locked)
+  const { data: linkedLoan } = await supabase
+    .from("loans")
+    .select("id, loan_code")
+    .eq("loan_application_id", payload.applicationId)
+    .maybeSingle();
+
+  if (linkedLoan) {
+    return {
+      success: false,
+      error: `Cannot edit application: It is already booked into active credit facility #${linkedLoan.loan_code}.`,
+    };
+  }
+
+  const facilityTypeStr =
+    payload.facility_type === "Others" && payload.facility_type_other?.trim()
+      ? `Others: ${payload.facility_type_other.trim()}`
+      : payload.facility_type;
+
+  // 2. Update loan_applications
+  const updateData: Record<string, unknown> = {
+    requested_amount: payload.requested_amount,
+    purpose: payload.purpose?.trim() || null,
+    tenure_months: payload.tenure_months || null,
+    facility_type: facilityTypeStr || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (payload.primary_borrower_id) {
+    updateData.borrower_id = payload.primary_borrower_id;
+  }
+  if (payload.application_code?.trim()) {
+    updateData.application_code = payload.application_code.trim();
+  }
+
+  const { error: appUpdateError } = await supabase
+    .from("loan_applications")
+    .update(updateData)
+    .eq("id", payload.applicationId);
+
+  if (appUpdateError) {
+    // If tenure_months or facility_type columns don't exist on live DB, retry without them
+    if (appUpdateError.message?.includes("column") || appUpdateError.code === "42703") {
+      delete updateData.tenure_months;
+      delete updateData.facility_type;
+      const { error: retryErr } = await supabase
+        .from("loan_applications")
+        .update(updateData)
+        .eq("id", payload.applicationId);
+
+      if (retryErr) {
+        return { success: false, error: retryErr.message };
+      }
+    } else {
+      return { success: false, error: appUpdateError.message };
+    }
+  }
+
+  // 3. Update multi-party structure (co-borrowers and guarantors)
+  try {
+    // Remove existing non-primary parties
+    await supabase
+      .from("loan_application_parties")
+      .delete()
+      .eq("loan_application_id", payload.applicationId)
+      .neq("party_role", "primary_borrower");
+
+    const newParties: Array<{
+      loan_application_id: string;
+      borrower_id: string;
+      party_role: "co_borrower" | "guarantor" | "security_provider";
+      guarantee_type: string | null;
+      is_primary: boolean;
+      order_index: number;
+      is_guarantor?: boolean;
+      is_security_provider?: boolean;
+    }> = [];
+
+    if (payload.co_borrowers) {
+      payload.co_borrowers.forEach((cb, idx) => {
+        if (cb.borrower_id) {
+          newParties.push({
+            loan_application_id: payload.applicationId,
+            borrower_id: cb.borrower_id,
+            party_role: "co_borrower",
+            guarantee_type: null,
+            is_primary: false,
+            order_index: idx + 1,
+            is_guarantor: false,
+            is_security_provider: false,
+          });
+        }
+      });
+    }
+
+    if (payload.guarantors) {
+      payload.guarantors.forEach((g, idx) => {
+        if (g.borrower_id) {
+          newParties.push({
+            loan_application_id: payload.applicationId,
+            borrower_id: g.borrower_id,
+            party_role: "guarantor",
+            guarantee_type: g.guarantee_type || "personal",
+            is_primary: false,
+            order_index: idx + 1,
+            is_guarantor: true,
+            is_security_provider: Boolean(g.is_security_provider),
+          });
+        }
+      });
+    }
+
+    if (payload.security_providers) {
+      payload.security_providers.forEach((sp, idx) => {
+        if (sp.borrower_id) {
+          const existing = newParties.find((p) => p.borrower_id === sp.borrower_id);
+          if (existing) {
+            existing.is_security_provider = true;
+            if (sp.is_guarantor) {
+              existing.is_guarantor = true;
+              existing.guarantee_type = sp.guarantee_type || existing.guarantee_type || "personal";
+            }
+          } else {
+            newParties.push({
+              loan_application_id: payload.applicationId,
+              borrower_id: sp.borrower_id,
+              party_role: "security_provider",
+              guarantee_type: sp.is_guarantor ? (sp.guarantee_type || "personal") : null,
+              is_primary: false,
+              order_index: (payload.guarantors?.length || 0) + idx + 1,
+              is_guarantor: Boolean(sp.is_guarantor),
+              is_security_provider: true,
+            });
+          }
+        }
+      });
+    }
+
+    if (newParties.length > 0) {
+      await supabase.from("loan_application_parties").insert(newParties);
+    }
+  } catch (err) {
+    console.warn("Could not sync loan_application_parties:", err);
+  }
+
+  // 4. Update Collaterals and LAS Securities
+  try {
+    // Delete existing collaterals
+    await supabase
+      .from("loan_collaterals")
+      .delete()
+      .eq("loan_application_id", payload.applicationId);
+
+    const collateralsToInsert: Array<{
+      loan_application_id: string;
+      collateral_type: string;
+      charge_type: string | null;
+      property_status: string | null;
+      address: string | null;
+      city: string | null;
+      pincode: string | null;
+      estimated_value: number | null;
+      details: string | null;
+      pledgor_borrower_id?: string | null;
+      pledgor_name?: string | null;
+      pledgor_pan?: string | null;
+    }> = [];
+
+    if (payload.collaterals && payload.collaterals.length > 0) {
+      for (const c of payload.collaterals) {
+        collateralsToInsert.push({
+          loan_application_id: payload.applicationId,
+          collateral_type: c.collateral_type,
+          charge_type: c.charge_type || null,
+          property_status: c.property_status || null,
+          address: c.address || null,
+          city: c.city || null,
+          pincode: c.pincode || null,
+          estimated_value: c.estimated_value || null,
+          details: c.details || null,
+        });
+      }
+    }
+
+    if (payload.las_securities && payload.las_securities.length > 0) {
+      for (const s of payload.las_securities) {
+        collateralsToInsert.push({
+          loan_application_id: payload.applicationId,
+          collateral_type: "Equity Shares",
+          charge_type: "Pledge",
+          property_status: "Liquid Securities",
+          address: `${s.security_name} (ISIN: ${s.isin})`,
+          city: s.pledgor_name,
+          pincode: null,
+          estimated_value: s.market_value,
+          details: JSON.stringify(s),
+          pledgor_borrower_id: s.pledgor_borrower_id || null,
+          pledgor_name: s.pledgor_name || null,
+          pledgor_pan: s.pledgor_pan || null,
+        });
+      }
+
+      // Sync loan_pledged_securities if table exists
+      try {
+        await supabase
+          .from("loan_pledged_securities")
+          .delete()
+          .eq("loan_application_id", payload.applicationId);
+
+        const pledgedRows = payload.las_securities.map((s) => ({
+          loan_application_id: payload.applicationId,
+          security_name: s.security_name,
+          isin: s.isin,
+          quantity: s.quantity,
+          cmp: s.cmp,
+          market_value: s.market_value,
+          security_cover: s.security_cover,
+          loan_value: s.loan_value,
+          pledgor_name: s.pledgor_name,
+        }));
+        await supabase.from("loan_pledged_securities").insert(pledgedRows);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (collateralsToInsert.length > 0) {
+      await supabase.from("loan_collaterals").insert(collateralsToInsert);
+    }
+  } catch (err) {
+    console.warn("Could not sync loan_collaterals:", err);
+  }
+
+  revalidatePath("/loans");
+  revalidatePath(`/loans/${payload.applicationId}`);
+  revalidatePath(`/loans/${payload.applicationId}/edit`);
+  return { success: true };
+}

@@ -78,8 +78,8 @@ export function ExpandableProfileCard({
       )}
     >
       {/* Header Summary Row */}
-      <div className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-card">
-        <div className="flex items-start sm:items-center gap-3 min-w-0">
+      <div className="p-3.5 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-card">
+        <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
           <BorrowerAvatar
             name={borrower.displayName}
             type={borrower.borrower_type}
@@ -140,7 +140,7 @@ export function ExpandableProfileCard({
         </div>
 
         {/* Right side controls */}
-        <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+        <div className="flex items-center gap-1.5 flex-wrap shrink-0">
           {isVerified && role === "Primary Borrower" && (
             <div className="hidden sm:flex items-center gap-1 text-xs text-emerald-600 font-semibold px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20 mr-1">
               <ShieldCheck className="size-3.5" /> Verified
@@ -190,9 +190,9 @@ export function ExpandableProfileCard({
       {/* Expanded Details Body */}
       {isExpanded && (
         <div className="border-t border-border/80 bg-muted/20 p-4 sm:p-5 space-y-4 animate-in fade-in-50 duration-200">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5 text-xs">
             {/* 1. Legal / Entity Details */}
-            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3">
+            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3 min-w-0 overflow-hidden">
               <div className="flex items-center gap-1.5 font-semibold text-foreground text-[11px] uppercase tracking-wider text-muted-foreground">
                 {isCorporate ? <Building2 className="size-3.5 text-primary" /> : <User className="size-3.5 text-primary" />}
                 Entity & Identification
@@ -226,7 +226,7 @@ export function ExpandableProfileCard({
             </div>
 
             {/* 2. Statutory & Tax Registration */}
-            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3">
+            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3 min-w-0 overflow-hidden">
               <div className="flex items-center gap-1.5 font-semibold text-foreground text-[11px] uppercase tracking-wider text-muted-foreground">
                 <CreditCard className="size-3.5 text-primary" />
                 Tax & Identifiers
@@ -317,7 +317,7 @@ export function ExpandableProfileCard({
             </div>
 
             {/* 3. Business & Contact */}
-            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3">
+            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3 min-w-0 overflow-hidden">
               <div className="flex items-center gap-1.5 font-semibold text-foreground text-[11px] uppercase tracking-wider text-muted-foreground">
                 <Briefcase className="size-3.5 text-primary" />
                 Profile & Contact
@@ -371,7 +371,7 @@ export function ExpandableProfileCard({
             </div>
 
             {/* 4. Address Details */}
-            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3">
+            <div className="space-y-2 rounded-lg border border-border/60 bg-card/60 p-3 min-w-0 overflow-hidden">
               <div className="flex items-center gap-1.5 font-semibold text-foreground text-[11px] uppercase tracking-wider text-muted-foreground">
                 <MapPin className="size-3.5 text-primary" />
                 Address Details
