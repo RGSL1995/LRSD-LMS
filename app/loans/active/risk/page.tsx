@@ -5,6 +5,8 @@ import { LoanSubNav } from "@/components/loans/loan-subnav";
 import { RiskMonitorClient } from "./risk-monitor-client";
 import { getLASRiskDashboard, getManualLASPositions } from "./actions";
 
+export const dynamic = "force-dynamic";
+
 export default async function LASRiskMonitoringPage() {
   const [{ loans, error }, { positions: manualPositions }] = await Promise.all([
     getLASRiskDashboard(),

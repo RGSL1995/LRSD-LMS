@@ -109,7 +109,7 @@ function writeLocalStore(positions: any[]) {
   }
 }
 
-export function computeManualPositionMetrics(raw: any): ManualLASPosition {
+function computeManualPositionMetrics(raw: any): ManualLASPosition {
   const sharesPledged = Number(raw.sharesPledged ?? raw.shares_pledged ?? 0);
   const priceAtDisbursement = Number(raw.priceAtDisbursement ?? raw.price_at_disbursement ?? 0);
   const currentPrice = Number(raw.currentPrice ?? raw.current_price ?? priceAtDisbursement ?? 0);
