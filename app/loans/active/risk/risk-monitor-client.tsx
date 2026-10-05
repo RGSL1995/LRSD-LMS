@@ -545,7 +545,7 @@ export function RiskMonitorClient({
               {overallCover > 0 ? `${overallCover.toFixed(2)}x` : "—"}
             </div>
             <div className="text-[11px] text-muted-foreground">
-              Policy Benchmark: <strong>2.00x - 2.50x</strong>
+              Total Collateral ÷ Total Exposure
             </div>
           </CardContent>
         </Card>
