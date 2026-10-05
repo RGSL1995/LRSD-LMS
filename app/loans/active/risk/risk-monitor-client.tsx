@@ -122,7 +122,7 @@ export function RiskMonitorClient({
     currentPrice: 0,
     disbursementDate: new Date().toISOString().split("T")[0],
     disbursedAmount: 0,
-    requiredCover: 2.0,
+    requiredCover: 3.5,
     pledgorName: "",
     remarks: "",
   });
@@ -363,7 +363,7 @@ export function RiskMonitorClient({
           currentPrice: 0,
           disbursementDate: new Date().toISOString().split("T")[0],
           disbursedAmount: 0,
-          requiredCover: 2.0,
+          requiredCover: 3.5,
           pledgorName: "",
           remarks: "",
         });
@@ -1107,20 +1107,38 @@ export function RiskMonitorClient({
 
               {/* Security Cover Required (**X) */}
               <div className="space-y-1">
-                <label className="font-semibold text-muted-foreground">Security Cover Required (**X Multiple)</label>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-muted-foreground">Security Cover Required (**X)</label>
+                  <div className="flex items-center gap-1">
+                    {[2.0, 2.5, 3.0, 3.5, 4.0].map((cov) => (
+                      <button
+                        key={cov}
+                        type="button"
+                        onClick={() => setDraft({ ...draft, requiredCover: cov })}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                          draft.requiredCover === cov
+                            ? "bg-indigo-600 text-white font-bold border-indigo-600 shadow-xs"
+                            : "bg-muted/60 text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {cov}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <select
                   value={draft.requiredCover}
-                  onChange={(e) => setDraft({ ...draft, requiredCover: Number(e.target.value) || 2.0 })}
+                  onChange={(e) => setDraft({ ...draft, requiredCover: Number(e.target.value) || 3.5 })}
                   className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
                 >
                   <option value={1.5}>1.50x (66.6% LTV)</option>
                   <option value={1.75}>1.75x (57.1% LTV)</option>
                   <option value={2.0}>2.00x (50.0% LTV - Standard)</option>
                   <option value={2.25}>2.25x (44.4% LTV)</option>
-                  <option value={2.5}>2.50x (40.0% LTV - High Volatility)</option>
-                  <option value={3.0}>3.00x (33.3% LTV - Ultra Safe)</option>
-                  <option value={3.5}>3.50x (28.6% LTV - High Margin)</option>
-                  <option value={4.0}>4.00x (25.0% LTV - Conservative)</option>
+                  <option value={2.5}>2.50x (40.0% LTV)</option>
+                  <option value={3.0}>3.00x (33.3% LTV)</option>
+                  <option value={3.5}>3.50x (28.6% LTV - Standard Policy)</option>
+                  <option value={4.0}>4.00x (25.0% LTV - High Margin)</option>
                 </select>
               </div>
 
@@ -1426,10 +1444,28 @@ export function RiskMonitorClient({
               </div>
 
               <div className="space-y-1">
-                <label className="font-semibold text-muted-foreground">Security Cover Required</label>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-muted-foreground">Security Cover Required (**X)</label>
+                  <div className="flex items-center gap-1">
+                    {[2.0, 2.5, 3.0, 3.5, 4.0].map((cov) => (
+                      <button
+                        key={cov}
+                        type="button"
+                        onClick={() => setEditingPosition({ ...editingPosition, requiredCover: cov })}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                          editingPosition.requiredCover === cov
+                            ? "bg-indigo-600 text-white font-bold border-indigo-600 shadow-xs"
+                            : "bg-muted/60 text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {cov}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <select
                   value={editingPosition.requiredCover}
-                  onChange={(e) => setEditingPosition({ ...editingPosition, requiredCover: Number(e.target.value) || 2.0 })}
+                  onChange={(e) => setEditingPosition({ ...editingPosition, requiredCover: Number(e.target.value) || 3.5 })}
                   className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
                 >
                   <option value={1.5}>1.50x (66.6% LTV)</option>
@@ -1438,8 +1474,8 @@ export function RiskMonitorClient({
                   <option value={2.25}>2.25x (44.4% LTV)</option>
                   <option value={2.5}>2.50x (40.0% LTV)</option>
                   <option value={3.0}>3.00x (33.3% LTV)</option>
-                  <option value={3.5}>3.50x (28.6% LTV - High Margin)</option>
-                  <option value={4.0}>4.00x (25.0% LTV - Conservative)</option>
+                  <option value={3.5}>3.50x (28.6% LTV - Standard Policy)</option>
+                  <option value={4.0}>4.00x (25.0% LTV - High Margin)</option>
                 </select>
               </div>
             </div>

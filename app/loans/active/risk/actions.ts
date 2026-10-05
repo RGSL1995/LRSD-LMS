@@ -114,7 +114,7 @@ function computeManualPositionMetrics(raw: any): ManualLASPosition {
   const priceAtDisbursement = Number(raw.priceAtDisbursement ?? raw.price_at_disbursement ?? 0);
   const currentPrice = Number(raw.currentPrice ?? raw.current_price ?? priceAtDisbursement ?? 0);
   const disbursedAmount = Number(raw.disbursedAmount ?? raw.disbursed_amount ?? 0);
-  const requiredCover = Number(raw.requiredCover ?? raw.required_cover ?? 2.0);
+  const requiredCover = Number(raw.requiredCover ?? raw.required_cover ?? 3.5);
 
   const disbursementValue = sharesPledged * priceAtDisbursement;
   const initialCover = disbursedAmount > 0 ? disbursementValue / disbursedAmount : 0;
@@ -229,7 +229,7 @@ export async function addManualLASPositionAction(
       current_price: Number(input.currentPrice) || Number(input.priceAtDisbursement) || 0,
       disbursement_date: input.disbursementDate,
       disbursed_amount: Number(input.disbursedAmount) || 0,
-      required_cover: Number(input.requiredCover) || 2.0,
+      required_cover: Number(input.requiredCover) || 3.5,
       pledgor_name: input.pledgorName || "—",
       remarks: input.remarks || "",
       last_price_updated_at: now,
