@@ -43,6 +43,9 @@ import {
   type ManualLASPosition,
   type ManualLASPositionInput,
 } from "./actions";
+import { fetchLiveStockPrice, lookupSecurityDetails, searchSecuritiesAction } from "@/app/loans/market-actions";
+import type { SecurityRecord } from "@/lib/securities-directory";
+import { Zap, Info } from "lucide-react";
 
 type Filter = "all" | LASRiskStatus | "shortfall" | "stale";
 
@@ -123,6 +126,168 @@ export function RiskMonitorClient({
     pledgorName: "",
     remarks: "",
   });
+
+  // Stock Search / Live Quote Resolution State for Add Modal
+  const [stockSuggestions, setStockSuggestions] = useState<SecurityRecord[]>([]);
+  const [showStockDropdown, setShowStockDropdown] = useState(false);
+  const [isFetchingQuote, setIsFetchingQuote] = useState(false);
+  const [liveQuoteResult, setLiveQuoteResult] = useState<{
+    symbol: string;
+    cmp: number;
+    prevClose?: number;
+    isin?: string;
+    companyName?: string;
+    exchange?: string;
+  } | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+
+  // Stock Search / Live Quote Resolution State for Edit Modal
+  const [editIsFetchingQuote, setEditIsFetchingQuote] = useState(false);
+  const [editQuoteResult, setEditQuoteResult] = useState<{
+    symbol: string;
+    cmp: number;
+    prevClose?: number;
+    isin?: string;
+    companyName?: string;
+    exchange?: string;
+  } | null>(null);
+  const [editQuoteError, setEditQuoteError] = useState<string | null>(null);
+
+  // Autocomplete change handler for Add Modal
+  const handleStockNameChange = (val: string) => {
+    setDraft((prev) => ({ ...prev, securityName: val }));
+    setQuoteError(null);
+    if (val.trim().length >= 2) {
+      searchSecuritiesAction(val.trim()).then((results) => {
+        setStockSuggestions(results);
+        setShowStockDropdown(results.length > 0);
+      });
+    } else {
+      setStockSuggestions([]);
+      setShowStockDropdown(false);
+    }
+  };
+
+  const handleSelectSuggestion = async (item: SecurityRecord) => {
+    setShowStockDropdown(false);
+    setStockSuggestions([]);
+    setIsFetchingQuote(true);
+    setQuoteError(null);
+    setLiveQuoteResult(null);
+
+    setDraft((prev) => ({
+      ...prev,
+      securityName: item.companyName,
+      symbol: item.symbol,
+      isin: item.isin || prev.isin,
+    }));
+
+    try {
+      const quote = await fetchLiveStockPrice(item.symbol || item.companyName);
+      setIsFetchingQuote(false);
+      if (quote.success && quote.cmp) {
+        setLiveQuoteResult({
+          symbol: quote.symbol || item.symbol,
+          cmp: quote.cmp,
+          prevClose: quote.previousClose,
+          isin: quote.isin || item.isin,
+          companyName: quote.companyName || item.companyName,
+          exchange: quote.exchange || "NSE",
+        });
+        setDraft((prev) => ({
+          ...prev,
+          securityName: quote.companyName || item.companyName,
+          symbol: quote.symbol || item.symbol,
+          isin: quote.isin || item.isin || prev.isin,
+          currentPrice: quote.cmp!,
+          priceAtDisbursement: prev.priceAtDisbursement === 0 ? quote.cmp! : prev.priceAtDisbursement,
+        }));
+      } else {
+        setQuoteError(quote.error || "No live tick feed found. You can enter CMP manually.");
+      }
+    } catch {
+      setIsFetchingQuote(false);
+      setQuoteError("Unable to fetch market price. Enter CMP manually.");
+    }
+  };
+
+  const handleFetchDraftQuote = async () => {
+    const query = (draft.symbol || "").trim() || (draft.securityName || "").trim() || (draft.isin || "").trim();
+    if (!query) {
+      alert("Please enter a Stock Name, Symbol (e.g. ORIANA, GPECO, MYMUDRA) or ISIN Code.");
+      return;
+    }
+    setIsFetchingQuote(true);
+    setQuoteError(null);
+    setLiveQuoteResult(null);
+
+    try {
+      const quote = await fetchLiveStockPrice(query);
+      setIsFetchingQuote(false);
+      if (quote.success && quote.cmp) {
+        setLiveQuoteResult({
+          symbol: quote.symbol || draft.symbol || query,
+          cmp: quote.cmp,
+          prevClose: quote.previousClose,
+          isin: quote.isin || draft.isin,
+          companyName: quote.companyName || draft.securityName,
+          exchange: quote.exchange || "NSE",
+        });
+        setDraft((prev) => ({
+          ...prev,
+          securityName: quote.companyName || prev.securityName || query,
+          symbol: quote.symbol || prev.symbol,
+          isin: quote.isin || prev.isin,
+          currentPrice: quote.cmp!,
+          priceAtDisbursement: prev.priceAtDisbursement === 0 ? quote.cmp! : prev.priceAtDisbursement,
+        }));
+      } else {
+        setQuoteError(quote.error || "No live exchange quote found. Please enter CMP manually.");
+      }
+    } catch {
+      setIsFetchingQuote(false);
+      setQuoteError("Service unavailable. Enter CMP manually.");
+    }
+  };
+
+  const handleFetchEditQuote = async () => {
+    if (!editingPosition) return;
+    const query = (editingPosition.symbol || "").trim() || (editingPosition.securityName || "").trim() || (editingPosition.isin || "").trim();
+    if (!query) {
+      alert("Please enter a Stock Name, Symbol or ISIN Code to fetch price.");
+      return;
+    }
+    setEditIsFetchingQuote(true);
+    setEditQuoteError(null);
+    setEditQuoteResult(null);
+
+    try {
+      const quote = await fetchLiveStockPrice(query);
+      setEditIsFetchingQuote(false);
+      if (quote.success && quote.cmp) {
+        setEditQuoteResult({
+          symbol: quote.symbol || editingPosition.symbol || query,
+          cmp: quote.cmp,
+          prevClose: quote.previousClose,
+          isin: quote.isin || editingPosition.isin,
+          companyName: quote.companyName || editingPosition.securityName,
+          exchange: quote.exchange || "NSE",
+        });
+        setEditingPosition((prev) => prev ? ({
+          ...prev,
+          securityName: quote.companyName || prev.securityName,
+          symbol: quote.symbol || prev.symbol,
+          isin: quote.isin || prev.isin,
+          currentPrice: quote.cmp!,
+        }) : null);
+      } else {
+        setEditQuoteError(quote.error || "No live exchange quote found. Enter CMP manually.");
+      }
+    } catch {
+      setEditIsFetchingQuote(false);
+      setEditQuoteError("Service unavailable. Enter CMP manually.");
+    }
+  };
 
   // Filtered & Sorted Manual Positions
   const filteredManualPositions = useMemo(() => {
@@ -748,37 +913,118 @@ export function RiskMonitorClient({
                 />
               </div>
 
-              {/* Security Name */}
-              <div className="space-y-1">
-                <label className="font-semibold text-muted-foreground">Pledged Security / Stock Name *</label>
-                <Input
-                  value={draft.securityName}
-                  onChange={(e) => setDraft({ ...draft, securityName: e.target.value })}
-                  placeholder="e.g. Reliance Industries, HDFC Bank"
-                  className="h-8 text-xs"
-                />
+              {/* Security Name with Live Autocomplete & Live Quote Fetcher */}
+              <div className="space-y-1 relative sm:col-span-2">
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-muted-foreground flex items-center gap-1.5">
+                    Pledged Security / Stock Name *
+                    <span className="text-[10px] font-normal text-indigo-500">(Type to search or enter symbol)</span>
+                  </label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleFetchDraftQuote}
+                    disabled={isFetchingQuote || (!(draft.securityName || "").trim() && !(draft.symbol || "").trim() && !(draft.isin || "").trim())}
+                    className="h-6 px-2 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 gap-1"
+                  >
+                    {isFetchingQuote ? <Loader2 className="size-3 animate-spin" /> : <Zap className="size-3 text-amber-500 fill-amber-500" />}
+                    ⚡ Fetch Live Quote
+                  </Button>
+                </div>
+
+                <div className="relative">
+                  <Input
+                    value={draft.securityName}
+                    onChange={(e) => handleStockNameChange(e.target.value)}
+                    onFocus={() => {
+                      if (stockSuggestions.length > 0) setShowStockDropdown(true);
+                    }}
+                    placeholder="e.g. Oriana Power, GP Eco Solutions, My Mudra, Reliance, TCS..."
+                    className="h-8 text-xs pr-8"
+                  />
+                  {isFetchingQuote && (
+                    <div className="absolute right-2.5 top-2">
+                      <Loader2 className="size-4 animate-spin text-indigo-500" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Autocomplete Dropdown */}
+                {showStockDropdown && stockSuggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-popover border border-border rounded-lg shadow-xl max-h-48 overflow-y-auto divide-y divide-border/50 text-xs">
+                    <div className="px-3 py-1 bg-muted/60 text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                      Matching Listed Equities & SMEs
+                    </div>
+                    {stockSuggestions.map((item, idx) => (
+                      <button
+                        key={`${item.symbol}-${idx}`}
+                        type="button"
+                        onClick={() => handleSelectSuggestion(item)}
+                        className="w-full px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground flex items-center justify-between transition-colors"
+                      >
+                        <div>
+                          <div className="font-semibold text-foreground">{item.companyName}</div>
+                          <div className="text-[10px] text-muted-foreground font-mono">
+                            Symbol: <span className="text-primary font-bold">{item.symbol}</span> {item.isin ? `· ISIN: ${item.isin}` : ""}
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] font-mono shrink-0 ml-2">
+                          Select & Fetch
+                        </Badge>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Live Quote Result or Info Message */}
+                {liveQuoteResult && (
+                  <div className="mt-1.5 p-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-[11px] text-emerald-800 dark:text-emerald-300">
+                    <div className="flex items-center gap-1.5 font-medium">
+                      <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span>Live {liveQuoteResult.exchange || "NSE"} Quote:</span>
+                      <strong className="font-mono text-sm">₹{formatINR(liveQuoteResult.cmp, 2)}</strong>
+                      {liveQuoteResult.prevClose && (
+                        <span className="text-muted-foreground text-[10px] font-normal">
+                          (Prev Close: ₹{formatINR(liveQuoteResult.prevClose, 2)})
+                        </span>
+                      )}
+                    </div>
+                    {liveQuoteResult.isin && (
+                      <span className="font-mono text-[10px] bg-background/60 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                        ISIN: {liveQuoteResult.isin}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {quoteError && (
+                  <div className="mt-1.5 p-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                    <Info className="size-3.5 shrink-0 text-amber-500" />
+                    <span>{quoteError} (You can enter Price & CMP manually).</span>
+                  </div>
+                )}
               </div>
 
               {/* Symbol / ISIN */}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">NSE Symbol</label>
-                  <Input
-                    value={draft.symbol}
-                    onChange={(e) => setDraft({ ...draft, symbol: e.target.value.toUpperCase() })}
-                    placeholder="e.g. RELIANCE"
-                    className="h-8 text-xs font-mono uppercase"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">ISIN Code</label>
-                  <Input
-                    value={draft.isin}
-                    onChange={(e) => setDraft({ ...draft, isin: e.target.value.toUpperCase() })}
-                    placeholder="INE002A01018"
-                    className="h-8 text-xs font-mono uppercase"
-                  />
-                </div>
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">NSE / BSE Symbol</label>
+                <Input
+                  value={draft.symbol}
+                  onChange={(e) => setDraft({ ...draft, symbol: e.target.value.toUpperCase() })}
+                  placeholder="e.g. ORIANA, GPECO, RELIANCE"
+                  className="h-8 text-xs font-mono uppercase"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-semibold text-muted-foreground">ISIN Code</label>
+                <Input
+                  value={draft.isin}
+                  onChange={(e) => setDraft({ ...draft, isin: e.target.value.toUpperCase() })}
+                  placeholder="e.g. INE0OUT01027"
+                  className="h-8 text-xs font-mono uppercase"
+                />
               </div>
 
               {/* Shares Pledged */}
@@ -814,7 +1060,10 @@ export function RiskMonitorClient({
 
               {/* Current Market Price (CMP) */}
               <div className="space-y-1">
-                <label className="font-semibold text-indigo-600 dark:text-indigo-400">Current Market Price (CMP ₹)</label>
+                <label className="font-semibold text-indigo-600 dark:text-indigo-400 flex items-center justify-between">
+                  <span>Current Market Price (CMP ₹)</span>
+                  <span className="text-[10px] font-normal text-muted-foreground">(Auto-fetched or manual)</span>
+                </label>
                 <Input
                   type="number"
                   value={draft.currentPrice || ""}
@@ -1048,18 +1297,53 @@ export function RiskMonitorClient({
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="font-semibold text-muted-foreground">Security / Stock Name</label>
+              <div className="space-y-1 sm:col-span-2">
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-muted-foreground">Security / Stock Name</label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleFetchEditQuote}
+                    disabled={editIsFetchingQuote || (!(editingPosition.securityName || "").trim() && !(editingPosition.symbol || "").trim() && !(editingPosition.isin || "").trim())}
+                    className="h-6 px-2 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 gap-1"
+                  >
+                    {editIsFetchingQuote ? <Loader2 className="size-3 animate-spin" /> : <Zap className="size-3 text-amber-500 fill-amber-500" />}
+                    ⚡ Fetch Live Quote
+                  </Button>
+                </div>
                 <Input
                   value={editingPosition.securityName}
                   onChange={(e) => setEditingPosition({ ...editingPosition, securityName: e.target.value })}
                   className="h-8 text-xs"
                 />
+
+                {editQuoteResult && (
+                  <div className="mt-1.5 p-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-[11px] text-emerald-800 dark:text-emerald-300">
+                    <div className="flex items-center gap-1.5 font-medium">
+                      <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span>Live {editQuoteResult.exchange || "NSE"} Quote:</span>
+                      <strong className="font-mono text-sm">₹{formatINR(editQuoteResult.cmp, 2)}</strong>
+                    </div>
+                    {editQuoteResult.isin && (
+                      <span className="font-mono text-[10px] bg-background/60 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                        ISIN: {editQuoteResult.isin}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {editQuoteError && (
+                  <div className="mt-1.5 p-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                    <Info className="size-3.5 shrink-0 text-amber-500" />
+                    <span>{editQuoteError}</span>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">NSE Symbol</label>
+                  <label className="font-semibold text-muted-foreground">NSE / BSE Symbol</label>
                   <Input
                     value={editingPosition.symbol}
                     onChange={(e) => setEditingPosition({ ...editingPosition, symbol: e.target.value.toUpperCase() })}
