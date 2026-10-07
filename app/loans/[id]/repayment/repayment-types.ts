@@ -41,6 +41,7 @@ export type LedgerTxnType =
   | "Principal"
   | "Collection"
   | "Interest"
+  | "Interest Offset"
   | "Broken Interest"
   | "Broken Period"
   | "Tds"
@@ -95,9 +96,37 @@ export interface DailyLedgerEntry {
   cumulative: number; // Running principal / balance
   days: number; // Number of days to next date or month-end
   interestAmount: number; // Daily segment interest calculated: cumulative * roi% * (days / 365)
+  lateInterestAmount?: number;
   referenceNumber?: string;
   bankName?: string;
+  targetDueDate?: string;
+  sourceReceiptNumber?: string;
+  /** Present only for derived month-end entries; these are never persisted as source transactions. */
+  systemGenerated?: boolean;
+  action?: string;
   createdAt?: string;
+}
+
+export interface AccruedInterestEntry {
+  id: string;
+  date: string;
+  txnType: "Interest Transfer" | "Payment Receipt";
+  narration: string;
+  txnDate: string;
+  valueDate: string;
+  debit: number;
+  credit: number;
+  cumulative: number;
+  outstanding?: number;
+  dueDate?: string;
+  dpd: number;
+  lateInterest: number;
+  /** Late charge already included in this month's interest transfer. */
+  lateChargeIncluded?: number;
+  referenceNumber?: string;
+  paymentMode?: PaymentMethod;
+  repaymentId?: string;
+  sourceLedgerEntryId?: string;
 }
 
 /**
@@ -106,11 +135,15 @@ export interface DailyLedgerEntry {
 export interface ActualMonthlyScheduleItem {
   periodKey: string; // e.g. "2026-06"
   brokerPeriod: string; // e.g. "Broker Period", "June", "July", "August"
+  dueDate?: string;
   principal: number; // Base / Sanctioned active principal
-  interestDue: number; // Calculated interest due from daily segments
+  interestDue: number; // Posted accrued interest, or projected interest before posting
+  regularInterestDue: number;
+  lateInterestDue: number;
   principalDue: number; // Scheduled principal due (0 for bullet / moratorium)
-  principalRecvd: number; // Actual principal payments received
-  interestRecvd: number; // Actual interest payments received (TDS + Cash)
+  principalRecvd: number; // Principal payments value-dated in this month
+  interestRecvd: number; // Interest applied against this due month (TDS + Cash)
+  openInterest: number;
   tdsRecvd?: number; // TDS deducted
   overdue: number; // Unpaid dues
   prepaymentOrOverdue: number; // Prepayment (negative) or Overdue (positive)
@@ -184,6 +217,9 @@ export interface LoanServicingSummary {
   schedules: InstallmentItem[];
   actualSchedules: ActualMonthlyScheduleItem[];
   dailyLedger: DailyLedgerEntry[];
+  accruedInterestLedger: AccruedInterestEntry[];
+  accruedInterestOutstanding: number;
+  lateInterestCarryForward: number;
   transactions: RepaymentTransaction[];
 }
 
@@ -205,6 +241,13 @@ export interface RecordPaymentInput {
   notes?: string;
 }
 
+export interface AccruedReceiptEditInput {
+  paymentDate: string;
+  targetDueDate: string;
+  amount: number;
+  referenceNumber?: string;
+}
+
 export interface AddLedgerTxnInput {
   txnType: LedgerTxnType;
   date?: string; // fallback YYYY-MM-DD
@@ -215,11 +258,10 @@ export interface AddLedgerTxnInput {
   credit?: number;
   referenceNumber?: string;
   bankName?: string;
+  targetDueDate?: string; // Due date for an accrued-interest receipt
   // TDS automatic twin entry
   autoSplitTds?: boolean;
   tdsRatePercent?: number;
   tdsAmount?: number;
   netCreditAmount?: number;
 }
-
-

@@ -10,7 +10,12 @@ import {
   allocatePaymentWaterfall,
   calculateDpdAndSma,
   calculateInstallmentDpd,
+  calculateInterestForDueMonth,
   computeDailyInterestLedger,
+  createMonthEndInterestEntries,
+  calculateLateInterestByPostingMonth,
+  buildAccruedInterestLedger,
+  getAccruedInterestBalance,
   computeActualMonthlySchedule,
   evaluateInstallmentStatus,
   formatDateISO,
@@ -23,14 +28,30 @@ import {
   type RepaymentTransaction,
   type RecordPaymentInput,
   type DailyLedgerEntry,
+  type AccruedInterestEntry,
   type ActualMonthlyScheduleItem,
   type AddLedgerTxnInput,
+  type AccruedReceiptEditInput,
   type LedgerTxnType,
 } from "./repayment-types";
 
 function unwrapRelation<T>(val: T | T[] | null | undefined): T | null {
   if (!val) return null;
   return Array.isArray(val) ? val[0] ?? null : val;
+}
+
+function dueOnSeventhOfMonth(dateValue: string): string {
+  const [year, month] = dateValue.split("-").map(Number);
+  return formatDateISO(new Date(year, month - 1, 7));
+}
+
+function seventhAfterMonthEnd(dateValue: string): string {
+  const [year, month] = dateValue.split("-").map(Number);
+  return formatDateISO(new Date(year, month, 7));
+}
+
+function isAccruedReceiptLedgerEntry(entry: { txnType: LedgerTxnType; credit?: number }): boolean {
+  return ["Interest", "Broken Interest", "Broken Period", "Tds"].includes(entry.txnType) && Number(entry.credit) > 0;
 }
 
 
@@ -170,16 +191,28 @@ export async function getLoanServicingSummary(
       const totalPaid = pPaid + iPaid + penPaid + chgPaid;
 
       const pDue = Number(s.principal_due) || 0;
-      const iDue = Number(s.interest_due) || 0;
+      const normalizedDueDate = dueOnSeventhOfMonth(s.due_date);
+      const correctFutureInterest =
+        s.installment_number > 0 &&
+        (config.repaymentMode === "bullet" || config.repaymentMode === "moratorium_emi" || config.repaymentMode === "moratorium_equal_principal") &&
+        s.status !== "paid" && s.status !== "waived";
+      const iDue = correctFutureInterest
+        ? calculateInterestForDueMonth(
+            normalizedDueDate,
+            Number(s.opening_principal) || config.disbursedAmount,
+            config.roiPercent,
+            config.dayCountConvention,
+          )
+        : Number(s.interest_due) || 0;
       const penDue = Number(s.penal_interest_due) || 0;
       const chgDue = Number(s.bouncing_charges_due) || 0;
-      const totalDue = Number(s.total_due) || pDue + iDue;
+      const totalDue = correctFutureInterest ? pDue + iDue : Number(s.total_due) || pDue + iDue;
       const grandDue = totalDue + penDue + chgDue;
 
       const item: InstallmentItem = {
         id: s.id,
         installmentNumber: s.installment_number,
-        dueDate: s.due_date,
+        dueDate: s.status === "paid" || s.status === "waived" ? s.due_date : normalizedDueDate,
         periodLabel: s.period_label || `Installment ${s.installment_number}`,
         openingPrincipal: Number(s.opening_principal) || 0,
         principalDue: pDue,
@@ -224,23 +257,17 @@ export async function getLoanServicingSummary(
   const transactions: RepaymentTransaction[] = (repaymentsData || []).map((r) => {
     // Determine target due date and DPD for this transaction
     let targetDueDate = r.target_due_date || undefined;
-    let dpd = r.dpd !== undefined && r.dpd !== null ? Number(r.dpd) : undefined;
 
     if (!targetDueDate) {
       // Find matching schedule or closest due date
       const matchedSchedule = schedules.find((s) => s.dueDate === r.payment_date) ||
         schedules.slice().reverse().find((s) => s.dueDate <= r.payment_date) ||
         schedules[0];
-      targetDueDate = matchedSchedule?.dueDate;
+      targetDueDate = dueOnSeventhOfMonth(matchedSchedule?.dueDate || r.payment_date);
     }
 
-    if (dpd === undefined && targetDueDate) {
-      if (r.payment_date > targetDueDate) {
-        dpd = getDaysDifference(targetDueDate, r.payment_date);
-      } else {
-        dpd = 0;
-      }
-    }
+    targetDueDate = dueOnSeventhOfMonth(targetDueDate);
+    const dpd = r.payment_date > targetDueDate ? getDaysDifference(targetDueDate, r.payment_date) : 0;
 
     return {
       id: r.id,
@@ -278,6 +305,8 @@ export async function getLoanServicingSummary(
     credit?: number;
     referenceNumber?: string;
     bankName?: string;
+    targetDueDate?: string;
+    sourceReceiptNumber?: string;
   }> = [];
 
   const rawConfigJson = existingConfig?.raw_data || {};
@@ -301,8 +330,8 @@ export async function getLoanServicingSummary(
     });
 
     for (const tx of transactions) {
-      if (tx.status !== "bounced") {
-        if (tx.paymentType === "part_prepayment" || tx.allocatedPrincipal > 0) {
+      if (tx.status === "cleared") {
+        if (tx.allocatedPrincipal > 0) {
           rawLedgerEntries.push({
             id: `repay_${tx.id}_p`,
             txnType: "Principal",
@@ -311,21 +340,7 @@ export async function getLoanServicingSummary(
             valueDate: tx.paymentDate,
             narration: tx.notes || "Collection",
             debit: 0,
-            credit: tx.allocatedPrincipal || tx.amount,
-            referenceNumber: tx.referenceNumber,
-            bankName: tx.bankName,
-          });
-        }
-        if (tx.allocatedInterest > 0) {
-          rawLedgerEntries.push({
-            id: `repay_${tx.id}_i`,
-            txnType: "Interest",
-            date: tx.paymentDate,
-            txnDate: tx.paymentDate,
-            valueDate: tx.paymentDate,
-            narration: tx.notes || "Interest Payment Received",
-            debit: 0,
-            credit: tx.allocatedInterest,
+            credit: tx.allocatedPrincipal,
             referenceNumber: tx.referenceNumber,
             bankName: tx.bankName,
           });
@@ -334,8 +349,96 @@ export async function getLoanServicingSummary(
     }
   }
 
-  const dailyLedger = computeDailyInterestLedger(rawLedgerEntries, config.roiPercent, config.dayCountConvention);
-  const actualSchedules = computeActualMonthlySchedule(dailyLedger, schedules, config);
+  const manualInterestReceipts: RepaymentTransaction[] = (rawLedgerEntries as DailyLedgerEntry[])
+    .filter((entry) =>
+      isAccruedReceiptLedgerEntry(entry) &&
+      !entry.sourceReceiptNumber &&
+      !transactions.some((tx) =>
+        tx.status === "cleared" &&
+        tx.paymentDate === (entry.valueDate || entry.date || entry.txnDate) &&
+        tx.allocatedInterest === Number(entry.credit) &&
+        (tx.referenceNumber || "") === (entry.referenceNumber || "")
+      )
+    )
+    .map((entry) => ({
+      id: `manual-${entry.id}`,
+      receiptNumber: `LEDGER-${entry.id}`,
+      paymentDate: entry.valueDate || entry.date || entry.txnDate,
+      targetDueDate: dueOnSeventhOfMonth(entry.targetDueDate || entry.valueDate || entry.date || entry.txnDate || formatDateISO(now)),
+      amount: Number(entry.credit),
+      allocatedPrincipal: 0,
+      allocatedInterest: Number(entry.credit),
+      allocatedPenal: 0,
+      allocatedCharges: 0,
+      paymentMode: entry.txnType === "Tds" ? "TDS Credit" as const : "Internal Transfer" as const,
+      referenceNumber: entry.referenceNumber,
+      bankName: entry.bankName,
+      paymentType: "regular_installment" as const,
+      status: "cleared" as const,
+      createdAt: entry.txnDate || entry.date || formatDateISO(now),
+    }));
+  const accruedReceipts = [...transactions, ...manualInterestReceipts];
+
+  // Cash interest and TDS settle the accrued account. They are kept in the
+  // source JSON for historical reconciliation but are not running-ledger rows.
+  const runningLedgerEntries = rawLedgerEntries.filter((entry) => !isAccruedReceiptLedgerEntry(entry));
+
+  const monthEndEntries = createMonthEndInterestEntries(
+    runningLedgerEntries as DailyLedgerEntry[],
+    accruedReceipts,
+    config.roiPercent,
+    config.dayCountConvention,
+    now,
+  );
+  const ledgerWithPostings = computeDailyInterestLedger(
+    [...runningLedgerEntries, ...monthEndEntries],
+    config.roiPercent,
+    config.dayCountConvention,
+  );
+  const generatedById = new Map(monthEndEntries.map((entry) => [entry.id, entry]));
+  const closedInterestMonths = new Set(
+    monthEndEntries.filter((entry) => entry.txnType === "Interest").map((entry) => entry.valueDate.slice(0, 7)),
+  );
+  const dailyLedger = ledgerWithPostings.map((entry) => {
+    const generated = generatedById.get(entry.id);
+    if (generated) return { ...entry, ...generated };
+    if (closedInterestMonths.has(entry.valueDate.slice(0, 7))) {
+      return { ...entry, days: 0, interestAmount: 0 };
+    }
+    return entry;
+  });
+
+  // Add posted late-interest charges to the installment whose due date follows
+  // the month-end debit. The baseline monthly interest projection remains intact.
+  for (const posting of monthEndEntries) {
+    if (posting.txnType !== "Interest" || !posting.lateInterestAmount) continue;
+    const dueDate = seventhAfterMonthEnd(posting.valueDate);
+    const installment = schedules.find((item) => item.dueDate === dueDate);
+    if (!installment) continue;
+    installment.interestDue += posting.lateInterestAmount;
+    installment.totalDue += posting.lateInterestAmount;
+    installment.totalBalance += posting.lateInterestAmount;
+    installment.status = evaluateInstallmentStatus(installment, now);
+    installment.dpd = calculateInstallmentDpd(installment, now);
+  }
+
+  const accruedInterestLedger: AccruedInterestEntry[] = buildAccruedInterestLedger(
+    dailyLedger.filter((entry) => ["Interest", "Broken Interest", "Broken Period"].includes(entry.txnType) && entry.debit > 0),
+    accruedReceipts,
+    config.roiPercent,
+    config.dayCountConvention,
+    now,
+  );
+  const accruedInterestOutstanding = getAccruedInterestBalance(accruedInterestLedger);
+  const asOfISO = formatDateISO(now);
+  const lateInterestCarryForward = [...calculateLateInterestByPostingMonth(
+    accruedReceipts, config.roiPercent, config.dayCountConvention,
+  )].reduce((total, [month, charge]) => {
+    const [year, monthNumber] = month.split("-").map(Number);
+    const monthEnd = formatDateISO(new Date(year, monthNumber, 0));
+    return total + (monthEnd > asOfISO ? charge : 0);
+  }, 0);
+  const actualSchedules = computeActualMonthlySchedule(dailyLedger, schedules, config, accruedInterestLedger, now, accruedReceipts);
 
   // 7. Compute aggregations & KPIs (Syncing with Daily Ledger when active)
   let totalPrincipalPaid = 0;
@@ -360,6 +463,8 @@ export async function getLoanServicingSummary(
       } else if (entry.txnType === "Interest" || entry.txnType === "Broken Interest" || entry.txnType === "Broken Period") {
         totalInterestDebited += entry.debit || 0;
         totalInterestPaid += entry.credit || 0;
+      } else if (entry.txnType === "Interest Offset") {
+        // Same-date non-cash credit offsets the principal-basis interest debit.
       } else if (entry.txnType === "Tds") {
         totalInterestPaid += entry.credit || 0;
       } else if (entry.txnType === "Penal") {
@@ -394,7 +499,7 @@ export async function getLoanServicingSummary(
       totalPenalPaid += s.penalInterestPaid;
       totalChargesPaid += s.bouncingChargesPaid;
 
-      const isPast = now.getTime() > new Date(s.dueDate).getTime();
+      const isPast = formatDateISO(now) > s.dueDate;
       if (isPast && s.status !== "paid" && s.status !== "waived") {
         overduePrincipal += Math.max(0, s.principalDue - s.principalPaid);
         overdueInterest += Math.max(0, s.interestDue - s.interestPaid);
@@ -407,12 +512,48 @@ export async function getLoanServicingSummary(
     }
   }
 
+  const openAccruedTransfers = accruedInterestLedger.filter(
+    (entry) => entry.txnType === "Interest Transfer" && (entry.outstanding || 0) > 0,
+  );
+  if (accruedInterestLedger.length > 0) {
+    overdueInterest = openAccruedTransfers
+      .filter((entry) => Boolean(entry.dueDate && entry.dueDate < formatDateISO(now)))
+      .reduce((total, entry) => total + (entry.outstanding || 0), 0);
+    if (openAccruedTransfers.length > 0) {
+      nextDueDate = openAccruedTransfers
+        .map((entry) => entry.dueDate)
+        .filter((date): date is string => Boolean(date))
+        .sort()[0];
+      nextDueAmount = accruedInterestOutstanding;
+    }
+  }
+
+  if (accruedInterestLedger.length > 0) {
+    totalInterestPaid = accruedInterestLedger
+      .filter((entry) => entry.txnType === "Payment Receipt")
+      .reduce((total, entry) => total + entry.credit, 0);
+  }
+
   const latestEntry = dailyLedger.length > 0 ? dailyLedger[dailyLedger.length - 1] : null;
   const currentPrincipalOutstanding = latestEntry ? latestEntry.cumulative : Math.max(0, config.disbursedAmount - totalPrincipalPaid);
   const totalCollected = totalPrincipalPaid + totalInterestPaid + totalPenalPaid + totalChargesPaid;
   const totalOverdue = overduePrincipal + overdueInterest + overduePenal + overdueCharges;
 
-  const { dpd, smaClass } = calculateDpdAndSma(schedules, now);
+  const scheduleDelinquency = calculateDpdAndSma(schedules, now);
+  const nonInterestDpd = schedules.reduce((days, schedule) => {
+    const unpaidOther =
+      Math.max(0, schedule.principalDue - schedule.principalPaid) +
+      Math.max(0, schedule.penalInterestDue - schedule.penalInterestPaid) +
+      Math.max(0, schedule.bouncingChargesDue - schedule.bouncingChargesPaid);
+    return unpaidOther > 0 && schedule.dueDate < asOfISO
+      ? Math.max(days, getDaysDifference(schedule.dueDate, asOfISO))
+      : days;
+  }, 0);
+  const accruedDpd = openAccruedTransfers.reduce((days, entry) => Math.max(days, entry.dpd), 0);
+  const dpd = accruedInterestLedger.length > 0
+    ? Math.max(nonInterestDpd, accruedDpd)
+    : scheduleDelinquency.dpd;
+  const smaClass = dpd > 90 ? "NPA" : dpd > 60 ? "SMA-2" : dpd > 30 ? "SMA-1" : dpd > 0 ? "SMA-0" : "Standard";
 
   return {
     applicationId,
@@ -444,6 +585,9 @@ export async function getLoanServicingSummary(
     schedules,
     actualSchedules,
     dailyLedger,
+    accruedInterestLedger,
+    accruedInterestOutstanding,
+    lateInterestCarryForward,
     transactions,
   };
 }
@@ -554,6 +698,12 @@ export async function recordPaymentAction(
 
     // 1. Run Waterfall Allocation on Gross Credit (Net Cash + TDS Asset)
     const allocation = allocatePaymentWaterfall(summary.schedules, grossTotalPayment);
+    if (netAmount <= 0 || tdsAmount < 0 || allocation.unallocatedAmount > 0) {
+      return { success: false, error: "Enter a positive collection amount within the outstanding loan dues." };
+    }
+    if (tdsAmount > allocation.allocatedInterest) {
+      return { success: false, error: "TDS cannot exceed the interest portion of this collection." };
+    }
 
     // 2. Update each schedule row in DB
     for (const s of allocation.updatedSchedules) {
@@ -583,10 +733,8 @@ export async function recordPaymentAction(
       (s) => s.status === "overdue" || s.status === "due" || s.status === "partially_paid"
     ) || summary.schedules[0];
 
-    const targetDueDate = input.targetDueDate || oldestPendingSchedule?.dueDate || input.paymentDate;
-    const dpd = input.dpd !== undefined
-      ? input.dpd
-      : input.paymentDate > targetDueDate
+    const targetDueDate = dueOnSeventhOfMonth(input.targetDueDate || oldestPendingSchedule?.dueDate || input.paymentDate);
+    const dpd = input.paymentDate > targetDueDate
       ? getDaysDifference(targetDueDate, input.paymentDate)
       : 0;
 
@@ -654,72 +802,53 @@ export async function recordPaymentAction(
       const { error: tdsErr } = await supabase.from("loan_repayments").insert(tdsPayload);
       if (tdsErr) {
         console.warn("Failed to create TDS receipt record:", tdsErr.message);
+        tdsReceiptNumber = undefined;
       }
     }
 
-    // 6. Automatically sync into the Daily Running Ledger if ledger exists
+    // 6. Only principal and other non-interest movements affect the running
+    // ledger. Interest and TDS receipts are represented by the accrued account.
     if (summary.dailyLedger && summary.dailyLedger.length > 0) {
-      const currentLedger = [...summary.dailyLedger];
+      const currentLedger = summary.dailyLedger.filter((entry) => !entry.systemGenerated);
       const newEntries: DailyLedgerEntry[] = [];
 
-      if (tdsAmount > 0) {
-        // Entry 1: TDS Asset Credit
-        newEntries.push({
-          id: `ledger_${Date.now()}_tds`,
-          txnType: "Tds",
-          date: input.paymentDate,
-          txnDate: input.paymentDate,
-          valueDate: input.paymentDate,
-          narration: `TDS Assets (${input.tdsRatePercent || 10}%)`,
-          debit: 0,
-          credit: tdsAmount,
-          cumulative: 0,
-          days: 0,
-          interestAmount: 0,
-          referenceNumber: `TDS-${input.referenceNumber || receiptNumber}`,
-        });
+      const paymentEntry = (txnType: LedgerTxnType, credit: number, narration: string, idSuffix: string, referenceNumber?: string): DailyLedgerEntry => ({
+        id: `ledger_${Date.now()}_${idSuffix}`,
+        txnType,
+        date: input.paymentDate,
+        txnDate: input.paymentDate,
+        valueDate: input.paymentDate,
+        narration,
+        debit: 0,
+        credit,
+        cumulative: 0,
+        days: 0,
+        interestAmount: 0,
+        referenceNumber,
+        bankName: input.bankName,
+        targetDueDate,
+        sourceReceiptNumber: receiptNumber,
+      });
 
-        // Entry 2: Net Cash / Bank Received
-        newEntries.push({
-          id: `ledger_${Date.now()}_rcv`,
-          txnType: input.paymentType === "part_prepayment" ? "Principal" : "Interest",
-          date: input.paymentDate,
-          txnDate: input.paymentDate,
-          valueDate: input.paymentDate,
-          narration: input.narration || (input.paymentType === "part_prepayment" ? "Collection" : "Payment Received"),
-          debit: 0,
-          credit: netAmount,
-          cumulative: 0,
-          days: 0,
-          interestAmount: 0,
-          referenceNumber: input.referenceNumber,
-          bankName: input.bankName,
-        });
-      } else {
-        newEntries.push({
-          id: `ledger_${Date.now()}_rcv`,
-          txnType: input.paymentType === "part_prepayment" ? "Principal" : "Interest",
-          date: input.paymentDate,
-          txnDate: input.paymentDate,
-          valueDate: input.paymentDate,
-          narration: input.narration || (input.paymentType === "part_prepayment" ? "Collection" : "Payment Received"),
-          debit: 0,
-          credit: netAmount,
-          cumulative: 0,
-          days: 0,
-          interestAmount: 0,
-          referenceNumber: input.referenceNumber,
-          bankName: input.bankName,
-        });
+      if (allocation.allocatedPrincipal > 0) {
+        newEntries.push(paymentEntry("Principal", allocation.allocatedPrincipal, input.narration || "Principal payment received", "principal", input.referenceNumber));
+      }
+      if (allocation.allocatedPenal > 0) {
+        newEntries.push(paymentEntry("Penal", allocation.allocatedPenal, "Penal interest receipt", "penal", input.referenceNumber));
+      }
+      if (allocation.allocatedCharges > 0) {
+        newEntries.push(paymentEntry("Charges", allocation.allocatedCharges, "Charge receipt", "charges", input.referenceNumber));
       }
 
-      const updatedRaw = [...currentLedger, ...newEntries];
-      const recalculated = computeDailyInterestLedger(
-        updatedRaw,
-        summary.config.roiPercent,
-        summary.config.dayCountConvention,
-      );
-      await saveDailyLedgerAction(applicationId, recalculated);
+      if (newEntries.length > 0) {
+        const updatedRaw = [...currentLedger, ...newEntries];
+        const recalculated = computeDailyInterestLedger(
+          updatedRaw,
+          summary.config.roiPercent,
+          summary.config.dayCountConvention,
+        );
+        await saveDailyLedgerAction(applicationId, recalculated);
+      }
     }
 
     revalidatePath(`/loans/${applicationId}/repayment`);
@@ -728,6 +857,254 @@ export async function recordPaymentAction(
   } catch (err: unknown) {
     const errorObj = err as { message?: string };
     return { success: false, error: errorObj?.message || "Failed to record payment." };
+  }
+}
+
+
+/**
+ * Rebuilds schedule payment columns from the surviving cleared receipts.
+ * The booked due amounts stay intact; each receipt keeps its stored split
+ * between interest, principal, penalties and charges.
+ */
+async function rebuildSchedulePayments(applicationId: string): Promise<void> {
+  const supabase = await createClient();
+  const summary = await getLoanServicingSummary(applicationId);
+  if (!summary) throw new Error("Loan not found.");
+
+  const schedules = summary.schedules.map((item) => ({
+    ...item,
+    principalPaid: 0,
+    interestPaid: 0,
+    penalInterestPaid: 0,
+    bouncingChargesPaid: 0,
+    totalPaid: 0,
+    paidDate: undefined as string | undefined,
+  }));
+  const receipts = summary.transactions
+    .filter((item) => item.status === "cleared")
+    .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate) || a.createdAt.localeCompare(b.createdAt));
+
+  for (const receipt of receipts) {
+    const apply = (amount: number, dueField: "principalDue" | "interestDue" | "penalInterestDue" | "bouncingChargesDue", paidField: "principalPaid" | "interestPaid" | "penalInterestPaid" | "bouncingChargesPaid") => {
+      let remaining = amount;
+      for (const item of schedules) {
+        if (remaining <= 0) break;
+        if (item.status === "waived") continue;
+        const available = Math.max(0, item[dueField] - item[paidField]);
+        const applied = Math.min(remaining, available);
+        if (applied > 0) {
+          item[paidField] += applied;
+          item.paidDate = receipt.paymentDate;
+          remaining -= applied;
+        }
+      }
+      const finalPayable = schedules.slice().reverse().find((item) => item.status !== "waived");
+      if (remaining > 0 && finalPayable) {
+        finalPayable[paidField] += remaining;
+        finalPayable.paidDate = receipt.paymentDate;
+      }
+    };
+    apply(receipt.allocatedCharges, "bouncingChargesDue", "bouncingChargesPaid");
+    apply(receipt.allocatedPenal, "penalInterestDue", "penalInterestPaid");
+    apply(receipt.allocatedInterest, "interestDue", "interestPaid");
+    apply(receipt.allocatedPrincipal, "principalDue", "principalPaid");
+  }
+
+  for (const item of schedules) {
+    if (!item.id) continue;
+    item.totalPaid = item.principalPaid + item.interestPaid + item.penalInterestPaid + item.bouncingChargesPaid;
+    item.totalBalance = Math.max(0, item.totalDue + item.penalInterestDue + item.bouncingChargesDue - item.totalPaid);
+    item.status = item.status === "waived" ? "waived" : evaluateInstallmentStatus(item, new Date());
+    const { error } = await supabase.from("loan_schedules").update({
+      principal_paid: item.principalPaid,
+      interest_paid: item.interestPaid,
+      penal_interest_paid: item.penalInterestPaid,
+      bouncing_charges_paid: item.bouncingChargesPaid,
+      status: item.status,
+      paid_date: item.status === "paid" ? item.paidDate || null : null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", item.id).eq("loan_application_id", applicationId);
+    if (error) throw new Error(error.message);
+  }
+}
+
+async function changeStoredReceiptLedgerRows(
+  applicationId: string,
+  receipt: RepaymentTransaction,
+  mode: "update" | "delete",
+  replacement?: AccruedReceiptEditInput,
+  relatedReceipts: RepaymentTransaction[] = [],
+): Promise<void> {
+  const supabase = await createClient();
+  const { data: configRow, error: loadError } = await supabase
+    .from("loan_servicing_configs")
+    .select("raw_data")
+    .eq("loan_application_id", applicationId)
+    .maybeSingle();
+  if (loadError) throw new Error(loadError.message);
+  const rawData = configRow?.raw_data || {};
+  if (!Array.isArray(rawData.daily_ledger)) return;
+
+  const receiptNumbers = new Set([receipt.receiptNumber, ...relatedReceipts.map((item) => item.receiptNumber)]);
+  const nextEntries = (rawData.daily_ledger as DailyLedgerEntry[]).flatMap((entry) => {
+    const storedInterestReceipt = [receipt, ...relatedReceipts].some((item) =>
+      isAccruedReceiptLedgerEntry(entry) &&
+      (entry.valueDate || entry.date) === item.paymentDate &&
+      Number(entry.credit) === Number(item.allocatedInterest) &&
+      (entry.referenceNumber || "") === (item.referenceNumber || "") &&
+      /interest payment received|tds assets/i.test(entry.narration || "")
+    );
+    const linked = Boolean(entry.sourceReceiptNumber && receiptNumbers.has(entry.sourceReceiptNumber));
+    const legacy = entry.id === `repay_${receipt.id}_p` || entry.id === `repay_${receipt.id}_i`;
+    if (isAccruedReceiptLedgerEntry(entry) && (linked || legacy || storedInterestReceipt)) return [];
+    if (mode === "delete" && (linked || legacy)) return [];
+    if (mode === "update" && replacement && (linked || legacy) && ["Principal", "Collection"].includes(entry.txnType)) {
+      return [{
+        ...entry,
+        date: replacement.paymentDate,
+        txnDate: replacement.paymentDate,
+        valueDate: replacement.paymentDate,
+        referenceNumber: replacement.referenceNumber,
+      }];
+    }
+    return [entry];
+  });
+  const { error: saveError } = await supabase
+    .from("loan_servicing_configs")
+    .update({ raw_data: { ...rawData, daily_ledger: nextEntries } })
+    .eq("loan_application_id", applicationId);
+  if (saveError) throw new Error(saveError.message);
+}
+
+/** Edits a borrower receipt in the accrued-interest account. */
+export async function updateAccruedReceiptAction(
+  applicationId: string,
+  repaymentId: string | undefined,
+  sourceLedgerEntryId: string | undefined,
+  input: AccruedReceiptEditInput,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: "You must be signed in." };
+  if (!input.paymentDate || !input.targetDueDate || !Number.isFinite(input.amount) || input.amount <= 0) {
+    return { success: false, error: "Enter a payment date, due date, and positive amount." };
+  }
+
+  try {
+    const dueDate = dueOnSeventhOfMonth(input.targetDueDate);
+    if (sourceLedgerEntryId) {
+      const { data: configRow, error: loadError } = await supabase
+        .from("loan_servicing_configs").select("raw_data")
+        .eq("loan_application_id", applicationId).maybeSingle();
+      if (loadError) throw new Error(loadError.message);
+      const rawData = configRow?.raw_data || {};
+      const entries: DailyLedgerEntry[] = Array.isArray(rawData.daily_ledger) ? rawData.daily_ledger : [];
+      const index = entries.findIndex((entry) => entry.id === sourceLedgerEntryId && isAccruedReceiptLedgerEntry(entry));
+      if (index < 0) return { success: false, error: "Receipt not found." };
+      const updated = [...entries];
+      updated[index] = {
+        ...updated[index],
+        date: input.paymentDate,
+        txnDate: input.paymentDate,
+        valueDate: input.paymentDate,
+        credit: input.amount,
+        targetDueDate: dueDate,
+        referenceNumber: input.referenceNumber,
+      };
+      const { error } = await supabase.from("loan_servicing_configs")
+        .update({ raw_data: { ...rawData, daily_ledger: updated } })
+        .eq("loan_application_id", applicationId);
+      if (error) throw new Error(error.message);
+    } else if (repaymentId) {
+      const summary = await getLoanServicingSummary(applicationId);
+      const receipt = summary?.transactions.find((item) => item.id === repaymentId && item.status === "cleared");
+      if (!receipt || receipt.allocatedInterest <= 0) return { success: false, error: "Interest receipt not found." };
+      if (
+        receipt.allocatedPrincipal + receipt.allocatedPenal + receipt.allocatedCharges === 0 &&
+        input.amount > summary!.accruedInterestOutstanding + receipt.allocatedInterest
+      ) {
+        return { success: false, error: "Receipt amount exceeds the accrued interest available to settle." };
+      }
+      if (
+        (receipt.allocatedPrincipal > 0 || receipt.allocatedPenal > 0 || receipt.allocatedCharges > 0) &&
+        input.amount !== receipt.amount
+      ) return { success: false, error: "The amount of a mixed principal and interest receipt cannot be changed here." };
+
+      const { error } = await supabase.from("loan_repayments").update({
+        payment_date: input.paymentDate,
+        target_due_date: dueDate,
+        dpd: Math.max(0, getDaysDifference(dueDate, input.paymentDate)),
+        amount: input.amount,
+        allocated_interest: receipt.allocatedPrincipal + receipt.allocatedPenal + receipt.allocatedCharges > 0
+          ? receipt.allocatedInterest
+          : input.amount,
+        reference_number: input.referenceNumber || null,
+        updated_at: new Date().toISOString(),
+      }).eq("id", repaymentId).eq("loan_application_id", applicationId);
+      if (error) throw new Error(error.message);
+      await changeStoredReceiptLedgerRows(applicationId, receipt, "update", input);
+      await rebuildSchedulePayments(applicationId);
+    } else {
+      return { success: false, error: "Receipt not found." };
+    }
+    revalidatePath(`/loans/${applicationId}/repayment`);
+    return { success: true };
+  } catch (error: unknown) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to update receipt." };
+  }
+}
+
+/** Deletes a borrower receipt and reopens its accrued-interest debit. */
+export async function deleteAccruedReceiptAction(
+  applicationId: string,
+  repaymentId?: string,
+  sourceLedgerEntryId?: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: "You must be signed in." };
+
+  try {
+    if (sourceLedgerEntryId) {
+      const { data: configRow, error: loadError } = await supabase
+        .from("loan_servicing_configs").select("raw_data")
+        .eq("loan_application_id", applicationId).maybeSingle();
+      if (loadError) throw new Error(loadError.message);
+      const rawData = configRow?.raw_data || {};
+      const entries: DailyLedgerEntry[] = Array.isArray(rawData.daily_ledger) ? rawData.daily_ledger : [];
+      if (!entries.some((entry) => entry.id === sourceLedgerEntryId && isAccruedReceiptLedgerEntry(entry))) {
+        return { success: false, error: "Receipt not found." };
+      }
+      const { error } = await supabase.from("loan_servicing_configs")
+        .update({ raw_data: { ...rawData, daily_ledger: entries.filter((entry) => entry.id !== sourceLedgerEntryId) } })
+        .eq("loan_application_id", applicationId);
+      if (error) throw new Error(error.message);
+    } else if (repaymentId) {
+      const summary = await getLoanServicingSummary(applicationId);
+      const receipt = summary?.transactions.find((item) => item.id === repaymentId && item.status === "cleared");
+      if (!receipt || receipt.allocatedInterest <= 0) return { success: false, error: "Interest receipt not found." };
+      const companions = receipt.paymentMode === "TDS Credit"
+        ? []
+        : (summary?.transactions || []).filter((item) =>
+            item.paymentMode === "TDS Credit" &&
+            (item.notes || "").includes(`for Receipt ${receipt.receiptNumber}`)
+          );
+      const ids = [receipt.id, ...companions.map((item) => item.id)];
+      const { error } = await supabase.from("loan_repayments").delete()
+        .eq("loan_application_id", applicationId).in("id", ids);
+      if (error) throw new Error(error.message);
+      await changeStoredReceiptLedgerRows(
+        applicationId, receipt, "delete", undefined,
+        companions,
+      );
+      await rebuildSchedulePayments(applicationId);
+    } else {
+      return { success: false, error: "Receipt not found." };
+    }
+    revalidatePath(`/loans/${applicationId}/repayment`);
+    return { success: true };
+  } catch (error: unknown) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to delete receipt." };
   }
 }
 
@@ -823,7 +1200,14 @@ export async function saveDailyLedgerAction(
       // Column might not exist yet in schema cache
     }
 
-    rawData.daily_ledger = entries;
+    const visibleEntries = entries.filter((entry) => !entry.systemGenerated);
+    const visibleIds = new Set(visibleEntries.map((entry) => entry.id));
+    const retainedAccruedReceipts: DailyLedgerEntry[] = Array.isArray(rawData.daily_ledger)
+      ? rawData.daily_ledger.filter((entry: DailyLedgerEntry) =>
+          isAccruedReceiptLedgerEntry(entry) && !visibleIds.has(entry.id)
+        )
+      : [];
+    rawData.daily_ledger = [...visibleEntries, ...retainedAccruedReceipts];
 
     const { error: upsertErr } = await supabase
       .from("loan_servicing_configs")
@@ -878,13 +1262,19 @@ export async function addDailyLedgerTxnBatchAction(
     if (!summary) return { success: false, error: "Loan not found." };
     if (!inputs || inputs.length === 0) return { success: false, error: "No entries provided." };
 
-    const currentLedger = summary.dailyLedger || [];
+    const currentLedger = (summary.dailyLedger || []).filter((entry) => !entry.systemGenerated);
     const newEntries: DailyLedgerEntry[] = [];
 
     for (let i = 0; i < inputs.length; i++) {
       const input = inputs[i];
       const vDate = input.valueDate || input.date || input.txnDate || formatDateISO(new Date());
       const tDate = input.txnDate || input.date || input.valueDate || formatDateISO(new Date());
+      if (input.autoSplitTds && !["Interest", "Broken Interest", "Broken Period"].includes(input.txnType)) {
+        return { success: false, error: `Entry #${i + 1}: TDS split is only available for interest receipts.` };
+      }
+      if (input.autoSplitTds && (Number(input.debit) > 0 || Number(input.tdsAmount) > Number(input.credit))) {
+        return { success: false, error: `Entry #${i + 1}: Invalid interest receipt or TDS amount.` };
+      }
 
       if (input.autoSplitTds && input.tdsAmount && input.tdsAmount > 0) {
         // 1. Add TDS Assets credit entry
@@ -901,6 +1291,7 @@ export async function addDailyLedgerTxnBatchAction(
           days: 0,
           interestAmount: 0,
           referenceNumber: input.referenceNumber ? `TDS-${input.referenceNumber}` : undefined,
+          targetDueDate: input.targetDueDate,
         });
 
         // 2. Add Net Bank Receipt entry
@@ -919,6 +1310,7 @@ export async function addDailyLedgerTxnBatchAction(
           interestAmount: 0,
           referenceNumber: input.referenceNumber,
           bankName: input.bankName,
+          targetDueDate: input.targetDueDate,
         });
       } else {
         newEntries.push({
@@ -935,6 +1327,7 @@ export async function addDailyLedgerTxnBatchAction(
           interestAmount: 0,
           referenceNumber: input.referenceNumber,
           bankName: input.bankName,
+          targetDueDate: input.targetDueDate,
         });
       }
     }
@@ -964,10 +1357,13 @@ export async function updateDailyLedgerTxnAction(
     const summary = await getLoanServicingSummary(applicationId);
     if (!summary) return { success: false, error: "Loan not found." };
 
-    const currentLedger = summary.dailyLedger || [];
+    const currentLedger = (summary.dailyLedger || []).filter((entry) => !entry.systemGenerated);
     const entryIndex = currentLedger.findIndex((e) => e.id === entryId);
     if (entryIndex === -1) {
       return { success: false, error: "Ledger entry not found." };
+    }
+    if (currentLedger[entryIndex].sourceReceiptNumber) {
+      return { success: false, error: "Recorded collections must be corrected through the collection record." };
     }
 
     const oldEntry = currentLedger[entryIndex];
@@ -985,6 +1381,7 @@ export async function updateDailyLedgerTxnAction(
       credit: input.credit !== undefined ? Number(input.credit) || 0 : oldEntry.credit,
       referenceNumber: input.referenceNumber !== undefined ? input.referenceNumber : oldEntry.referenceNumber,
       bankName: input.bankName !== undefined ? input.bankName : oldEntry.bankName,
+      targetDueDate: input.targetDueDate !== undefined ? input.targetDueDate : oldEntry.targetDueDate,
     };
 
     const updatedList = [...currentLedger];
@@ -1017,7 +1414,10 @@ export async function deleteDailyLedgerTxnAction(
     const summary = await getLoanServicingSummary(applicationId);
     if (!summary) return { success: false, error: "Loan not found." };
 
-    const currentLedger = summary.dailyLedger || [];
+    const currentLedger = (summary.dailyLedger || []).filter((entry) => !entry.systemGenerated);
+    if (currentLedger.some((entry) => entry.id === entryId && entry.sourceReceiptNumber)) {
+      return { success: false, error: "Recorded collections must be corrected through the collection record." };
+    }
     const filtered = currentLedger.filter((e) => e.id !== entryId);
     const recalculated = computeDailyInterestLedger(filtered, summary.config.roiPercent, summary.config.dayCountConvention);
 
@@ -1027,4 +1427,3 @@ export async function deleteDailyLedgerTxnAction(
     return { success: false, error: errorObj?.message || "Failed to delete transaction." };
   }
 }
-

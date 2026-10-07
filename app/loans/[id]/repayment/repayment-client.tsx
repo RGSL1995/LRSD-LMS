@@ -14,6 +14,7 @@ import {
   type InstallmentItem,
   type ActualMonthlyScheduleItem,
   type DailyLedgerEntry,
+  type AccruedInterestEntry,
   type RepaymentTransaction,
   type RecordPaymentInput,
   type AddLedgerTxnInput,
@@ -30,6 +31,8 @@ import {
   addDailyLedgerTxnBatchAction,
   updateDailyLedgerTxnAction,
   deleteDailyLedgerTxnAction,
+  updateAccruedReceiptAction,
+  deleteAccruedReceiptAction,
 } from "./repayment-actions";
 import { allocatePaymentWaterfall, getDaysDifference } from "@/lib/repayment-engine";
 import {
@@ -57,16 +60,11 @@ import {
   Clock,
   ShieldAlert,
   Table,
-  Percent,
   Trash2,
   Pencil,
   Download,
   PlusCircle,
   Copy,
-  CalendarDays,
-  Coins,
-  ArrowDownRight,
-  ShieldCheck,
 } from "lucide-react";
 
 interface RepaymentClientProps {
@@ -74,7 +72,12 @@ interface RepaymentClientProps {
   initialSummary: LoanServicingSummary;
 }
 
-type TabKey = "actual_schedule" | "daily_ledger" | "schedule" | "transactions" | "simulator" | "statement";
+type TabKey = "actual_schedule" | "daily_ledger" | "accrued_interest" | "schedule" | "transactions" | "simulator" | "statement";
+
+function normalizeDueDateToSeventh(dateValue: string): string {
+  const [year, month] = dateValue.split("-");
+  return year && month ? `${year}-${month}-07` : dateValue;
+}
 
 export function RepaymentClient({
   applicationId,
@@ -109,42 +112,13 @@ export function RepaymentClient({
     ? Math.round(((summary.config.disbursedAmount * (summary.config.roiPercent / 100) * brokenPeriodDays) / 365) * 100) / 100
     : 0;
 
-  // Segregated breakdown of all ledger transactions
-  const brokenInterestDebitedInLedger = (summary.dailyLedger || [])
-    .filter((e) => e.txnType === "Broken Interest" || e.txnType === "Broken Period" || (e.txnType === "Interest" && (e.narration || "").toLowerCase().includes("broken")))
-    .reduce((acc, c) => acc + (c.debit || 0), 0);
-
-  const regularInterestDebitedInLedger = (summary.dailyLedger || [])
-    .filter((e) => (e.txnType === "Interest") && !(e.narration || "").toLowerCase().includes("broken"))
-    .reduce((acc, c) => acc + (c.debit || 0), 0);
-
-  const totalDisbursedInLedger = (summary.dailyLedger || [])
-    .filter((e) => e.txnType === "Disbursement")
-    .reduce((acc, c) => acc + (c.debit || 0), 0);
-
-  const totalPrincipalRepaidInLedger = (summary.dailyLedger || [])
-    .filter((e) => e.txnType === "Principal" || e.txnType === "Collection")
-    .reduce((acc, c) => acc + (c.credit || 0), 0);
-
-  const totalTdsCreditsInLedger = (summary.dailyLedger || [])
-    .filter((e) => e.txnType === "Tds")
-    .reduce((acc, c) => acc + (c.credit || 0), 0);
-
-  const totalInterestDebitedInLedger = brokenInterestDebitedInLedger + regularInterestDebitedInLedger;
-  const totalInterestCollectedInLedger = (summary.dailyLedger || [])
-    .filter((e) => e.txnType === "Interest" || e.txnType === "Broken Interest" || e.txnType === "Broken Period" || e.txnType === "Tds")
-    .reduce((acc, c) => acc + (c.credit || 0), 0);
-  const overdueUnpaidInterestInLedger = Math.max(0, totalInterestDebitedInLedger - totalInterestCollectedInLedger);
-
   // Full 30-day and 31-day estimated monthly interest on active cumulative principal
   const fullMonth30dInterest = Math.round((activeCumulativePrincipal * (summary.config.roiPercent / 100) * 30) / 365);
-  const fullMonth31dInterest = Math.round((activeCumulativePrincipal * (summary.config.roiPercent / 100) * 31) / 365);
-  const dailyInterestAccrualRate = Math.round((activeCumulativePrincipal * (summary.config.roiPercent / 100)) / 365);
 
   // Intelligent suggested collection / due amount
   const suggestedDueAmount =
-    overdueUnpaidInterestInLedger > 0
-      ? overdueUnpaidInterestInLedger
+    summary.accruedInterestOutstanding > 0
+      ? summary.accruedInterestOutstanding
       : latestSegmentAccruedInterest > 0
       ? latestSegmentAccruedInterest
       : summary.nextDueAmount > 0
@@ -152,7 +126,6 @@ export function RepaymentClient({
       : fullMonth30dInterest;
 
   // Latest pending due amount (overdue or upcoming installment due)
-  const latestPendingDue = suggestedDueAmount;
   
   // TDS Calculation States
   const [tdsMode, setTdsMode] = useState<"net_of_tds" | "gross_no_tds">("net_of_tds");
@@ -185,19 +158,18 @@ export function RepaymentClient({
     tdsRatePercent: number;
     referenceNumber: string;
     bankName: string;
+    targetDueDate: string;
   }
 
   const [isAddLedgerOpen, setIsAddLedgerOpen] = useState(false);
   const [ledgerRows, setLedgerRows] = useState<LedgerRowDraft[]>([]);
 
-  const createDefaultLedgerRow = (prefillCredit: number = 0, defaultType: LedgerTxnType = "Collection"): LedgerRowDraft => {
+  const createDefaultLedgerRow = (prefillCredit: number = 0, defaultType: LedgerTxnType = "Other"): LedgerRowDraft => {
     const today = new Date().toISOString().split("T")[0];
     const initialCredit = prefillCredit > 0 ? prefillCredit : suggestedDueAmount;
     const initialDebit =
       defaultType === "Disbursement"
         ? (prefillCredit || activeCumulativePrincipal)
-        : defaultType === "Interest"
-        ? (latestSegmentAccruedInterest || fullMonth30dInterest)
         : 0;
 
     return {
@@ -213,11 +185,11 @@ export function RepaymentClient({
           : defaultType === "Tds"
           ? "TDS Assets"
           : defaultType === "Interest"
-          ? "Interest Debit"
-          : "Payment Received",
-      debit: defaultType === "Disbursement" || defaultType === "Interest" ? initialDebit : 0,
+          ? "Accrued interest receipt"
+          : "Ledger adjustment",
+      debit: defaultType === "Disbursement" ? initialDebit : 0,
       credit:
-        defaultType === "Collection" || defaultType === "Principal"
+        defaultType === "Collection" || defaultType === "Principal" || defaultType === "Interest"
           ? initialCredit
           : defaultType === "Tds"
           ? Math.round(initialCredit * 0.1)
@@ -226,17 +198,19 @@ export function RepaymentClient({
       tdsRatePercent: 10,
       referenceNumber: "",
       bankName: "",
+      targetDueDate: summary.accruedInterestLedger.find((entry) => entry.txnType === "Interest Transfer" && (entry.outstanding || 0) > 0)?.dueDate || selectedDueDate,
     };
   };
 
   // Helper to open Add Daily Ledger Modal with latest due prefilled and editable
   const openAddLedgerModal = () => {
-    setLedgerRows([createDefaultLedgerRow(suggestedDueAmount, "Collection")]);
+    setActionMessage(null);
+    setLedgerRows([createDefaultLedgerRow(0, "Other")]);
     setIsAddLedgerOpen(true);
   };
 
   const addAnotherLedgerRow = () => {
-    setLedgerRows((prev) => [...prev, createDefaultLedgerRow(0, "Collection")]);
+    setLedgerRows((prev) => [...prev, createDefaultLedgerRow(0, "Other")]);
   };
 
   const updateLedgerRow = (id: string, updates: Partial<LedgerRowDraft>) => {
@@ -250,6 +224,7 @@ export function RepaymentClient({
         }
         // If txnType changed, update default narration and debit/credit assignments
         if (updates.txnType && updates.txnType !== row.txnType) {
+          updated.autoSplitTds = false;
           if (updates.txnType === "Collection") {
             updated.narration = "Collection";
             updated.credit = suggestedDueAmount;
@@ -263,13 +238,17 @@ export function RepaymentClient({
             updated.debit = brokenPeriodInterest;
             updated.credit = 0;
           } else if (updates.txnType === "Interest") {
-            updated.narration = "Interest Debit";
-            updated.debit = latestSegmentAccruedInterest > 0 ? latestSegmentAccruedInterest : fullMonth30dInterest;
-            updated.credit = 0;
+            updated.narration = "Accrued interest receipt";
+            updated.debit = 0;
+            updated.credit = summary.accruedInterestOutstanding;
           } else if (updates.txnType === "Tds") {
             updated.narration = "TDS Assets";
             updated.credit = Math.round(suggestedDueAmount * 0.1);
             updated.debit = 0;
+          } else {
+            updated.narration = `${updates.txnType} adjustment`;
+            updated.debit = 0;
+            updated.credit = 0;
           }
         }
         return updated;
@@ -296,6 +275,11 @@ export function RepaymentClient({
 
   // Edit Daily Ledger Transaction Modal state
   const [editingLedgerEntry, setEditingLedgerEntry] = useState<DailyLedgerEntry | null>(null);
+  const [editingAccruedReceipt, setEditingAccruedReceipt] = useState<AccruedInterestEntry | null>(null);
+  const [receiptEditDate, setReceiptEditDate] = useState("");
+  const [receiptEditDueDate, setReceiptEditDueDate] = useState("");
+  const [receiptEditAmount, setReceiptEditAmount] = useState(0);
+  const [receiptEditReference, setReceiptEditReference] = useState("");
   const [editTxnType, setEditTxnType] = useState<LedgerTxnType>("Collection");
   const [editTxnDate, setEditTxnDate] = useState<string>("");
   const [editValueDate, setEditValueDate] = useState<string>("");
@@ -414,6 +398,10 @@ export function RepaymentClient({
 
   // Handle Recording a Payment
   const handleRecordPayment = () => {
+    if (!paymentDate || !selectedDueDate) {
+      setActionMessage({ text: "Select the payment and due dates.", isError: true });
+      return;
+    }
     if (!paymentAmount || paymentAmount <= 0) {
       setActionMessage({ text: "Please enter a valid payment amount.", isError: true });
       return;
@@ -464,6 +452,14 @@ export function RepaymentClient({
         setActionMessage({ text: `Entry #${i + 1}: Please select both Transaction Date and Value Date.`, isError: true });
         return;
       }
+      if ((Number(row.debit) || 0) <= 0 && (Number(row.credit) || 0) <= 0) {
+        setActionMessage({ text: `Entry #${i + 1}: Enter a debit or credit amount.`, isError: true });
+        return;
+      }
+      if ((Number(row.debit) || 0) > 0 && (Number(row.credit) || 0) > 0) {
+        setActionMessage({ text: `Entry #${i + 1}: Use one side of the entry, debit or credit.`, isError: true });
+        return;
+      }
     }
 
     setActionMessage(null);
@@ -487,6 +483,9 @@ export function RepaymentClient({
           credit: Number(row.credit) || 0,
           referenceNumber: row.referenceNumber || undefined,
           bankName: row.bankName || undefined,
+          targetDueDate: row.credit > 0 && ["Interest", "Broken Interest", "Broken Period", "Tds"].includes(row.txnType)
+            ? normalizeDueDateToSeventh(row.targetDueDate)
+            : undefined,
           autoSplitTds: row.autoSplitTds,
           tdsRatePercent: row.tdsRatePercent,
           tdsAmount,
@@ -503,6 +502,53 @@ export function RepaymentClient({
         window.location.reload();
       } else {
         setActionMessage({ text: res.error || "Failed to add ledger transactions.", isError: true });
+      }
+    });
+  };
+
+  const openEditAccruedReceipt = (entry: AccruedInterestEntry) => {
+    const transaction = summary.transactions.find((item) => item.id === entry.repaymentId);
+    setActionMessage(null);
+    setEditingAccruedReceipt(entry);
+    setReceiptEditDate(transaction?.paymentDate || entry.date);
+    setReceiptEditDueDate(entry.dueDate || transaction?.targetDueDate || "");
+    setReceiptEditAmount(transaction?.amount || entry.credit);
+    setReceiptEditReference(transaction?.referenceNumber || entry.referenceNumber || "");
+  };
+
+  const handleUpdateAccruedReceipt = () => {
+    if (!editingAccruedReceipt) return;
+    setActionMessage(null);
+    startTransition(async () => {
+      const result = await updateAccruedReceiptAction(
+        applicationId,
+        editingAccruedReceipt.repaymentId,
+        editingAccruedReceipt.sourceLedgerEntryId,
+        {
+          paymentDate: receiptEditDate,
+          targetDueDate: receiptEditDueDate,
+          amount: Number(receiptEditAmount),
+          referenceNumber: receiptEditReference || undefined,
+        },
+      );
+      if (result.success) {
+        setEditingAccruedReceipt(null);
+        window.location.reload();
+      } else {
+        setActionMessage({ text: result.error || "Failed to update receipt.", isError: true });
+      }
+    });
+  };
+
+  const handleDeleteAccruedReceipt = (entry: AccruedInterestEntry) => {
+    if (!confirm("Delete this receipt? Its accrued-interest debit will become outstanding again.")) return;
+    setActionMessage(null);
+    startTransition(async () => {
+      const result = await deleteAccruedReceiptAction(applicationId, entry.repaymentId, entry.sourceLedgerEntryId);
+      if (result.success) {
+        window.location.reload();
+      } else {
+        setActionMessage({ text: result.error || "Failed to delete receipt.", isError: true });
       }
     });
   };
@@ -643,6 +689,8 @@ export function RepaymentClient({
         return <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/40">⚡ Broken Interest</span>;
       case "Interest":
         return <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30">Monthly Interest</span>;
+      case "Interest Offset":
+        return <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-slate-500/15 text-slate-700 dark:text-slate-300 border border-slate-500/30">Interest Offset</span>;
       case "Tds":
         return <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30">Tds</span>;
       case "Penal":
@@ -722,10 +770,11 @@ export function RepaymentClient({
             <Button
               size="sm"
               onClick={() => {
+                setActionMessage(null);
                 const targetDue = summary.nextDueAmount || summary.schedules.find((s) => s.status !== "paid")?.totalDue || 0;
                 setGrossDueInput(targetDue);
                 if (tdsMode === "net_of_tds") {
-                  const tds = Math.round(targetDue * 0.1);
+                  const tds = Math.round(targetDue * (tdsRatePercent / 100));
                   setCustomTdsAmount(tds);
                   setPaymentAmount(targetDue - tds);
                 } else {
@@ -864,6 +913,17 @@ export function RepaymentClient({
           2. Daily Interest & Transaction Ledger ({summary.dailyLedger?.length || 0})
         </button>
         <button
+          onClick={() => setActiveTab("accrued_interest")}
+          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-semibold whitespace-nowrap transition-colors ${
+            activeTab === "accrued_interest"
+              ? "bg-primary text-primary-foreground shadow-xs"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+          }`}
+        >
+          <Receipt className="size-4" />
+          3. Accrued Interest Account ({summary.accruedInterestLedger.length})
+        </button>
+        <button
           onClick={() => setActiveTab("schedule")}
           className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-medium whitespace-nowrap transition-colors ${
             activeTab === "schedule"
@@ -872,7 +932,7 @@ export function RepaymentClient({
           }`}
         >
           <Calendar className="size-4" />
-          3. Projected Amortization Schedule ({summary.schedules.length})
+          4. Projected Amortization Schedule ({summary.schedules.length})
         </button>
         <button
           onClick={() => setActiveTab("transactions")}
@@ -883,7 +943,7 @@ export function RepaymentClient({
           }`}
         >
           <Receipt className="size-4" />
-          4. Payment History & Receipts ({summary.transactions.length})
+          5. Payment History & Receipts ({summary.transactions.length})
         </button>
         <button
           onClick={() => setActiveTab("simulator")}
@@ -894,7 +954,7 @@ export function RepaymentClient({
           }`}
         >
           <Settings2 className="size-4" />
-          5. Schedule Config & Calculator
+          6. Schedule Config & Calculator
         </button>
         <button
           onClick={() => setActiveTab("statement")}
@@ -905,123 +965,148 @@ export function RepaymentClient({
           }`}
         >
           <FileText className="size-4" />
-          6. Statement of Account
+          7. Statement of Account
         </button>
       </div>
 
-      {/* TAB 1: UPDATED EMI SCHEDULE - AS ACTUAL (Matches Spreadsheet Image 2) */}
+      {/* UPDATED EMI SCHEDULE - AS ACTUAL */}
       {activeTab === "actual_schedule" && (
-        <Card className="shadow-xs border">
-          <CardHeader className="pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <Card className="border shadow-xs">
+          <CardHeader className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-primary/10 text-primary border border-primary/20">
-                  REALIZED SCHEDULE
-                </span>
-                <CardTitle className="text-sm font-bold flex items-center gap-2">
-                  <FileSpreadsheet className="size-4 text-primary" />
-                  UPDATED EMI SCHEDULE - AS ACTUAL
-                </CardTitle>
-              </div>
-              <CardDescription className="text-xs mt-1">
-                Realized monthly realization rollup computed from daily value-dated tranches, exact day-segment interest accrual, TDS, and principal prepayments.
+              <CardTitle className="flex items-center gap-2 text-base font-semibold">
+                <FileSpreadsheet className="size-4 text-primary" />
+                Updated EMI Schedule · As Actual
+              </CardTitle>
+              <CardDescription className="mt-1 text-xs">
+                Monthly dues and receipts. Posted interest is grouped by its due date on the 7th.
               </CardDescription>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setActiveTab("daily_ledger")}
-                className="h-8 text-xs gap-1"
-              >
-                <Table className="size-3.5" /> View Daily Segments
-              </Button>
-              <Button
-                size="sm"
-                onClick={openAddLedgerModal}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white h-8 text-xs gap-1"
-              >
-                <Plus className="size-3.5" /> Add Ledger Txn
-              </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={() => setActiveTab("daily_ledger")} className="h-8 text-xs">Daily ledger</Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => setActiveTab("accrued_interest")} className="h-8 text-xs">Accrued interest</Button>
             </div>
           </CardHeader>
           <CardContent className="p-0">
+            <div className="grid grid-cols-2 gap-3 border-b px-5 py-4 text-xs sm:grid-cols-4">
+              <div><span className="block text-muted-foreground">Periods</span><strong className="mt-1 block text-sm">{summary.actualSchedules.length}</strong></div>
+              <div><span className="block text-muted-foreground">Interest received</span><strong className="mt-1 block text-sm">₹{formatINR(summary.totalInterestPaid, 2)}</strong></div>
+              <div><span className="block text-muted-foreground">Accrued interest open</span><strong className="mt-1 block text-sm">₹{formatINR(summary.accruedInterestOutstanding, 2)}</strong></div>
+              <div><span className="block text-muted-foreground">Principal outstanding</span><strong className="mt-1 block text-sm">₹{formatINR(summary.currentPrincipalOutstanding, 2)}</strong></div>
+            </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left border-collapse">
+              <table className="w-full min-w-[1250px] border-collapse text-left text-xs">
                 <thead>
-                  <tr className="bg-muted/70 border-b border-border text-[11px] font-bold text-foreground">
-                    <th className="p-3 border-r">Broker Period</th>
-                    <th className="p-3 text-right border-r">Principal</th>
-                    <th className="p-3 text-right border-r">Interest Due</th>
-                    <th className="p-3 text-right border-r">Principal Due</th>
-                    <th className="p-3 text-right border-r">Principal Recvd</th>
-                    <th className="p-3 text-right border-r">Interest Recived</th>
-                    <th className="p-3 text-right border-r bg-red-500/10 text-red-700 dark:text-red-400">Overdue</th>
-                    <th className="p-3 text-right border-r bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">Prepayment / (Overdue)</th>
-                    <th className="p-3 text-right font-bold text-foreground">Outstanding</th>
+                  <tr className="border-b bg-muted/40 text-muted-foreground">
+                    <th className="px-4 py-3 font-medium">Period</th>
+                    <th className="px-4 py-3 font-medium">Due date</th>
+                    <th className="px-4 py-3 text-right font-medium">Regular interest</th>
+                    <th className="px-4 py-3 text-right font-medium">Late charge</th>
+                    <th className="px-4 py-3 text-right font-medium">Total interest due</th>
+                    <th className="px-4 py-3 text-right font-medium">Interest received</th>
+                    <th className="px-4 py-3 text-right font-medium">Interest open</th>
+                    <th className="px-4 py-3 text-right font-medium">Principal due</th>
+                    <th className="px-4 py-3 text-right font-medium">Principal received</th>
+                    <th className="px-4 py-3 text-right font-medium">Principal outstanding</th>
+                    <th className="px-4 py-3 text-center font-medium">Status</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border font-mono">
-                  {(summary.actualSchedules || []).length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="p-8 text-center text-muted-foreground font-sans text-xs">
-                        No actual schedule records available. Add transactions in the Daily Ledger or configure the loan schedule.
+                <tbody className="divide-y">
+                  {summary.actualSchedules.length === 0 ? (
+                    <tr><td colSpan={11} className="px-4 py-10 text-center text-muted-foreground">No schedule periods are available yet.</td></tr>
+                  ) : summary.actualSchedules.map((row) => (
+                    <tr key={row.periodKey} className="hover:bg-muted/20">
+                      <td className="whitespace-nowrap px-4 py-3 font-medium">{row.brokerPeriod}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{row.dueDate ? formatDateDDMMYYYY(row.dueDate) : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono">{row.regularInterestDue > 0 ? `₹${formatINR(row.regularInterestDue, 2)}` : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-amber-700 dark:text-amber-400">{row.lateInterestDue > 0 ? `₹${formatINR(row.lateInterestDue, 2)}` : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono font-medium">{row.interestDue > 0 ? `₹${formatINR(row.interestDue, 2)}` : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono">{row.interestRecvd > 0 ? `₹${formatINR(row.interestRecvd, 2)}` : "—"}</td>
+                      <td className={`whitespace-nowrap px-4 py-3 text-right font-mono ${row.overdue > 0 ? "font-semibold text-destructive" : ""}`}>{row.openInterest > 0 ? `₹${formatINR(row.openInterest, 2)}` : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono">{row.principalDue > 0 ? `₹${formatINR(row.principalDue, 2)}` : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono">{row.principalRecvd > 0 ? `₹${formatINR(row.principalRecvd, 2)}` : "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono font-semibold">₹{formatINR(row.outstanding, 2)}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-center">
+                        {renderInstallmentStatus(row.status)}
+                        {row.dpd > 0 && <span className="ml-1 text-[10px] text-muted-foreground">· {row.dpd} DPD</span>}
                       </td>
                     </tr>
-                  ) : (
-                    (summary.actualSchedules || []).map((row, idx) => {
-                      const hasOverdue = row.overdue > 0;
-                      const hasPrepayment = row.prepaymentOrOverdue < 0;
-                      return (
-                        <tr
-                          key={idx}
-                          className="hover:bg-muted/30 transition-colors"
-                        >
-                          <td className="p-3 font-sans font-medium text-foreground border-r whitespace-nowrap">
-                            {row.brokerPeriod}
-                          </td>
-                          <td className="p-3 text-right border-r">
-                            {row.principal > 0 ? `₹${formatINR(row.principal, 2)}` : "-"}
-                          </td>
-                          <td className="p-3 text-right border-r font-semibold text-foreground">
-                            {row.interestDue > 0 ? `₹${formatINR(row.interestDue, 2)}` : "-"}
-                          </td>
-                          <td className="p-3 text-right border-r text-muted-foreground">
-                            {row.principalDue > 0 ? `₹${formatINR(row.principalDue, 2)}` : "-"}
-                          </td>
-                          <td className="p-3 text-right border-r text-emerald-600 font-semibold">
-                            {row.principalRecvd > 0 ? `₹${formatINR(row.principalRecvd, 2)}` : "-"}
-                          </td>
-                          <td className="p-3 text-right border-r text-emerald-600 font-semibold">
-                            {row.interestRecvd > 0 ? `₹${formatINR(row.interestRecvd, 2)}` : "-"}
-                          </td>
-                          <td className={`p-3 text-right border-r font-bold ${
-                            hasOverdue
-                              ? "bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300"
-                              : "text-muted-foreground"
-                          }`}>
-                            {row.overdue > 0 ? `₹${formatINR(row.overdue, 2)}` : "-"}
-                          </td>
-                          <td className={`p-3 text-right border-r font-bold ${
-                            hasPrepayment
-                              ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300"
-                              : row.prepaymentOrOverdue > 0
-                              ? "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400"
-                              : "text-muted-foreground"
-                          }`}>
-                            {row.prepaymentOrOverdue !== 0
-                              ? `${row.prepaymentOrOverdue < 0 ? "-" : ""}₹${formatINR(Math.abs(row.prepaymentOrOverdue), 2)}`
-                              : "-"}
-                          </td>
-                          <td className="p-3 text-right font-bold text-primary">
-                            ₹{formatINR(row.outstanding, 2)}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
+                  ))}
                 </tbody>
               </table>
+            </div>
+            <p className="border-t px-5 py-3 text-xs text-muted-foreground">
+              Future regular interest uses the schedule until it is posted. A late receipt adds its charge to the closing debit for that receipt month, due on the next 7th.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ACCRUED INTEREST ACCOUNT */}
+      {activeTab === "accrued_interest" && (
+        <Card className="shadow-xs border">
+          <CardContent className="p-0">
+            <div id="accrued-interest-account" className="p-4 pt-6 space-y-3">
+              {actionMessage?.isError && <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionMessage.text}</p>}
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold">Accrued Interest Account</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Month-end interest transfers are debits; borrower receipts are credits. Interest is due on the 7th.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <span>Outstanding: <strong>₹{formatINR(summary.accruedInterestOutstanding, 2)}</strong></span>
+                  <span>Late charge awaiting month-end: <strong>₹{formatINR(summary.lateInterestCarryForward, 2)}</strong></span>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full text-xs text-left border-collapse">
+                  <thead>
+                    <tr className="bg-muted/70 border-b border-border text-[11px] font-bold">
+                      <th className="p-2.5 border-r">Date</th>
+                      <th className="p-2.5 border-r">Txn Type</th>
+                      <th className="p-2.5 border-r min-w-48">Narration</th>
+                      <th className="p-2.5 border-r">Txn Date</th>
+                      <th className="p-2.5 border-r">Value Date</th>
+                      <th className="p-2.5 border-r text-right">Debit</th>
+                      <th className="p-2.5 border-r text-right">Credit</th>
+                      <th className="p-2.5 border-r text-right">Cumulative</th>
+                      <th className="p-2.5 border-r">Due Date</th>
+                      <th className="p-2.5 border-r text-center">DPD</th>
+                      <th className="p-2.5 text-right">Late Interest</th>
+                      <th className="p-2.5 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border font-mono">
+                    {summary.accruedInterestLedger.length === 0 ? (
+                      <tr><td colSpan={12} className="p-5 text-center text-muted-foreground font-sans">No accrued-interest postings yet.</td></tr>
+                    ) : summary.accruedInterestLedger.map((entry) => (
+                      <tr key={entry.id} className="hover:bg-muted/30">
+                        <td className="p-2.5 border-r whitespace-nowrap">{formatDateDDMMYYYY(entry.date)}</td>
+                        <td className="p-2.5 border-r font-sans">{entry.txnType}</td>
+                        <td className="p-2.5 border-r font-sans">{entry.narration}</td>
+                        <td className="p-2.5 border-r whitespace-nowrap">{formatDateDDMMYYYY(entry.txnDate)}</td>
+                        <td className="p-2.5 border-r whitespace-nowrap">{formatDateDDMMYYYY(entry.valueDate)}</td>
+                        <td className="p-2.5 border-r text-right">{entry.debit > 0 ? formatINR(entry.debit, 2) : ""}</td>
+                        <td className="p-2.5 border-r text-right">{entry.credit > 0 ? formatINR(entry.credit, 2) : ""}</td>
+                        <td className="p-2.5 border-r text-right font-bold">{formatINR(entry.cumulative, 2)}</td>
+                        <td className="p-2.5 border-r whitespace-nowrap">{entry.dueDate ? formatDateDDMMYYYY(entry.dueDate) : ""}</td>
+                        <td className={`p-2.5 border-r text-center ${entry.dpd > 0 ? "text-amber-700 font-bold" : "text-muted-foreground"}`}>{entry.dpd || 0}</td>
+                        <td className="p-2.5 text-right">{entry.lateInterest > 0 ? formatINR(entry.lateInterest, 2) : ""}</td>
+                        <td className="p-2.5 text-center font-sans whitespace-nowrap">
+                          {entry.txnType === "Payment Receipt" && (entry.repaymentId || entry.sourceLedgerEntryId) && (
+                            <div className="flex justify-center gap-1">
+                              <button type="button" onClick={() => openEditAccruedReceipt(entry)} disabled={isPending} title="Edit receipt" aria-label="Edit receipt" className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"><Pencil className="size-3.5" /></button>
+                              <button type="button" onClick={() => handleDeleteAccruedReceipt(entry)} disabled={isPending} title="Delete receipt" aria-label="Delete receipt" className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><Trash2 className="size-3.5" /></button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -1034,7 +1119,7 @@ export function RepaymentClient({
             <div>
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30">
-                  DAY-COUNT ACCRUAL (ACTUAL / 365)
+                  DAY-COUNT ACCRUAL ({summary.config.dayCountConvention === "actual_365" ? "ACTUAL / 365" : "30 / 360"})
                 </span>
                 <CardTitle className="text-sm font-bold flex items-center gap-2">
                   <Table className="size-4 text-indigo-600" />
@@ -1042,10 +1127,18 @@ export function RepaymentClient({
                 </CardTitle>
               </div>
               <CardDescription className="text-xs mt-1">
-                Value-dated tranches, principal repayments, TDS tax assets, and day segment interest accrual at {summary.config.roiPercent}% p.a.
+                Value-dated principal movements and month-end interest at {summary.config.roiPercent}% p.a.; interest transfers are due on the 7th.
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setActiveTab("accrued_interest")}
+                className="h-8 text-xs"
+              >
+                Manage receipts
+              </Button>
               <Button
                 size="sm"
                 onClick={openAddLedgerModal}
@@ -1060,10 +1153,11 @@ export function RepaymentClient({
               <table className="w-full text-xs text-left border-collapse">
                 <thead>
                   <tr className="bg-muted/70 border-b border-border text-[11px] font-bold text-foreground">
+                    <th className="p-3 border-r w-28">Date</th>
                     <th className="p-3 border-r w-28">Txn Type</th>
+                    <th className="p-3 border-r min-w-40">Narration</th>
                     <th className="p-3 border-r w-28">Txn Date</th>
                     <th className="p-3 border-r w-28">Value Date</th>
-                    <th className="p-3 border-r min-w-40">Narration</th>
                     <th className="p-3 text-right border-r">Debit</th>
                     <th className="p-3 text-right border-r">Credit</th>
                     <th className="p-3 text-right border-r font-bold">Cumulative</th>
@@ -1077,7 +1171,7 @@ export function RepaymentClient({
                 <tbody className="divide-y divide-border font-mono text-xs">
                   {(summary.dailyLedger || []).length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="p-8 text-center text-muted-foreground font-sans text-xs">
+                      <td colSpan={11} className="p-8 text-center text-muted-foreground font-sans text-xs">
                         No ledger transactions recorded yet. Click &quot;Add Transaction&quot; to disburse funds or record collections.
                       </td>
                     </tr>
@@ -1095,15 +1189,10 @@ export function RepaymentClient({
                           key={entry.id || idx}
                           className="hover:bg-muted/30 transition-colors"
                         >
-                          <td className="p-3 border-r font-sans">
-                            {renderTxnTypeBadge(entry.txnType)}
-                          </td>
                           <td className="p-3 border-r whitespace-nowrap text-foreground font-mono">
-                            {formatDateDDMMYYYY(txnDisplayDate)}
+                            {formatDateDDMMYYYY(entry.date || valueDisplayDate)}
                           </td>
-                          <td className="p-3 border-r whitespace-nowrap text-indigo-950 dark:text-indigo-200 bg-indigo-50/40 dark:bg-indigo-950/20 font-semibold font-mono">
-                            {formatDateDDMMYYYY(valueDisplayDate)}
-                          </td>
+                          <td className="p-3 border-r font-sans">{renderTxnTypeBadge(entry.txnType)}</td>
                           <td className="p-3 border-r font-sans text-foreground">
                             <div className="font-medium">{entry.narration || "-"}</div>
                             {(entry.referenceNumber || entry.bankName) && (
@@ -1111,6 +1200,12 @@ export function RepaymentClient({
                                 {[entry.referenceNumber, entry.bankName].filter(Boolean).join(" • ")}
                               </div>
                             )}
+                          </td>
+                          <td className="p-3 border-r whitespace-nowrap text-foreground font-mono">
+                            {formatDateDDMMYYYY(txnDisplayDate)}
+                          </td>
+                          <td className="p-3 border-r whitespace-nowrap text-indigo-950 dark:text-indigo-200 bg-indigo-50/40 dark:bg-indigo-950/20 font-semibold font-mono">
+                            {formatDateDDMMYYYY(valueDisplayDate)}
                           </td>
                           <td className="p-3 text-right border-r text-foreground">
                             {entry.debit > 0 ? formatINR(entry.debit, 2) : ""}
@@ -1142,7 +1237,11 @@ export function RepaymentClient({
                               : ""}
                           </td>
                           <td className="p-3 text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center gap-1">
+                            {entry.systemGenerated || entry.sourceReceiptNumber ? (
+                              <span className="text-[10px] font-semibold text-muted-foreground">
+                                {entry.sourceReceiptNumber ? "Recorded receipt" : entry.action || "Auto"}
+                              </span>
+                            ) : <div className="flex items-center justify-center gap-1">
                               <button
                                 onClick={() => openEditLedgerModal(entry)}
                                 disabled={isPending}
@@ -1159,7 +1258,7 @@ export function RepaymentClient({
                               >
                                 <Trash2 className="size-3.5" />
                               </button>
-                            </div>
+                            </div>}
                           </td>
                         </tr>
                       );
@@ -1170,7 +1269,7 @@ export function RepaymentClient({
                 {(summary.dailyLedger || []).length > 0 && (
                   <tfoot className="bg-muted/80 font-mono text-xs border-t-2 border-border font-bold">
                     <tr>
-                      <td colSpan={4} className="p-3 border-r text-right font-sans font-bold">
+                      <td colSpan={5} className="p-3 border-r text-right font-sans font-bold">
                         Totals / Summary:
                       </td>
                       <td className="p-3 text-right border-r text-foreground">
@@ -1662,683 +1761,288 @@ export function RepaymentClient({
         </Card>
       )}
 
-      {/* RECORD PAYMENT MODAL DIALOG WITH INTELLIGENT TDS AUTOMATION */}
+      {/* RECORD COLLECTION */}
       {isRecordPaymentOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-card border rounded-xl shadow-2xl max-w-xl w-full p-6 space-y-4 text-foreground animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b pb-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border bg-card shadow-xl">
+            <div className="flex items-start justify-between border-b px-5 py-4">
               <div>
-                <h3 className="text-sm font-bold flex items-center gap-2 text-emerald-600">
-                  <CreditCard className="size-4" />
-                  Record Loan Collection & TDS Reconciliation
-                </h3>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Verify whether interest received is Net of TDS (e.g. 10% under Sec 194A) or Gross.
-                </p>
+                <h3 className="text-base font-semibold">Record collection</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">Apply a borrower receipt to loan dues.</p>
               </div>
-              <button
-                onClick={() => setIsRecordPaymentOpen(false)}
-                className="text-muted-foreground hover:text-foreground text-xs"
-              >
-                ✕
-              </button>
+              <button type="button" onClick={() => setIsRecordPaymentOpen(false)} aria-label="Close" className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground">✕</button>
             </div>
 
-            <div className="space-y-4 text-xs">
-              {/* Date selection & target due date */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">Payment Date (Value Date)</label>
-                  <Input
-                    type="date"
-                    value={paymentDate}
-                    onChange={(e) => setPaymentDate(e.target.value)}
-                    className="h-8 text-xs font-mono"
-                  />
+            <div className="space-y-5 overflow-y-auto px-5 py-4 text-sm">
+              {actionMessage?.isError && <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionMessage.text}</p>}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Payment date</label>
+                  <Input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} className="h-9 text-sm" />
                 </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">Target Installment Due Date</label>
-                  <Input
-                    type="date"
-                    value={selectedDueDate}
-                    onChange={(e) => setSelectedDueDate(e.target.value)}
-                    className="h-8 text-xs font-mono"
-                  />
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Due date (7th)</label>
+                  <Input type="date" value={selectedDueDate} onChange={(e) => setSelectedDueDate(normalizeDueDateToSeventh(e.target.value))} className="h-9 text-sm" />
                 </div>
               </div>
-
-              {/* DPD Pill Banner */}
-              <div className="flex items-center justify-between p-2 rounded bg-muted/50 border">
-                <span className="text-muted-foreground">Computed Repayment DPD:</span>
+              <div className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-xs">
+                <span className="text-muted-foreground">Days past due</span>
                 {renderDpdBadge(modalCalculatedDpd)}
               </div>
 
-              {/* TDS SELECTION MODE TOGGLE */}
-              <div className="p-3 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <label className="font-bold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
-                    <ShieldCheck className="size-3.5 text-indigo-600" />
-                    TDS Deduction Status (Section 194A)
-                  </label>
-                  <span className="text-[10px] text-indigo-700 dark:text-indigo-300 font-medium">
-                    Auto-reconciles Form 16A Asset
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTdsMode("net_of_tds");
-                      const tds = Math.round(grossDueInput * (tdsRatePercent / 100));
-                      setCustomTdsAmount(tds);
-                      setPaymentAmount(grossDueInput - tds);
+              <div className="space-y-3 border-t pt-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">TDS treatment</label>
+                  <select
+                    value={tdsMode}
+                    onChange={(e) => {
+                      const mode = e.target.value as "net_of_tds" | "gross_no_tds";
+                      setTdsMode(mode);
+                      if (mode === "net_of_tds") {
+                        const tds = Math.round(grossDueInput * (tdsRatePercent / 100));
+                        setCustomTdsAmount(tds);
+                        setPaymentAmount(grossDueInput - tds);
+                      } else {
+                        setCustomTdsAmount(0);
+                        setPaymentAmount(grossDueInput);
+                      }
                     }}
-                    className={`p-2.5 rounded-md border text-left transition-all ${
-                      tdsMode === "net_of_tds"
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
-                        : "bg-background text-foreground border-input hover:bg-muted/50"
-                    }`}
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
                   >
-                    <div className="font-bold text-[11px] flex items-center gap-1">
-                      <span>✓ Net of TDS Received</span>
-                    </div>
-                    <p className={`text-[10px] mt-0.5 ${tdsMode === "net_of_tds" ? "text-indigo-100" : "text-muted-foreground"}`}>
-                      Borrower deducted {tdsRatePercent}% TDS. Auto-creates TDS Asset entry.
-                    </p>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTdsMode("gross_no_tds");
-                      setPaymentAmount(grossDueInput);
-                      setCustomTdsAmount(0);
-                    }}
-                    className={`p-2.5 rounded-md border text-left transition-all ${
-                      tdsMode === "gross_no_tds"
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
-                        : "bg-background text-foreground border-input hover:bg-muted/50"
-                    }`}
-                  >
-                    <div className="font-bold text-[11px] flex items-center gap-1">
-                      <span>✓ Gross Payment (No TDS)</span>
-                    </div>
-                    <p className={`text-[10px] mt-0.5 ${tdsMode === "gross_no_tds" ? "text-indigo-100" : "text-muted-foreground"}`}>
-                      Full gross interest received in bank without tax deduction.
-                    </p>
-                  </button>
+                    <option value="gross_no_tds">No TDS</option>
+                    <option value="net_of_tds">TDS deducted</option>
+                  </select>
                 </div>
-
-                {/* TDS Live Calculator Breakdown */}
-                {tdsMode === "net_of_tds" && (
-                  <div className="mt-2 pt-2 border-t border-indigo-200 dark:border-indigo-800 grid grid-cols-3 gap-2 text-[11px]">
-                    <div className="space-y-1">
-                      <span className="text-muted-foreground block text-[10px]">Gross Interest Due (₹)</span>
+                {isTdsEnabled && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium">Gross interest (₹)</label>
+                      <Input type="number" min="0" value={grossDueInput} onChange={(e) => handleGrossChange(Number(e.target.value) || 0)} className="h-9 text-sm" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium">TDS rate (%)</label>
                       <Input
                         type="number"
-                        value={grossDueInput}
-                        onChange={(e) => handleGrossChange(Number(e.target.value) || 0)}
-                        className="h-7 text-xs font-mono font-bold bg-background"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <span className="text-muted-foreground block text-[10px]">TDS Rate % / Amount</span>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          type="number"
-                          value={tdsRatePercent}
-                          onChange={(e) => {
-                            const r = Number(e.target.value) || 0;
-                            setTdsRatePercent(r);
-                            const tds = Math.round(grossDueInput * (r / 100));
-                            setCustomTdsAmount(tds);
-                            setPaymentAmount(grossDueInput - tds);
-                          }}
-                          className="h-7 w-14 text-xs font-mono text-center bg-background"
-                        />
-                        <span className="font-bold font-mono text-purple-600 dark:text-purple-400 text-xs">
-                          ₹{formatINR(effectiveTdsAmount)}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      <span className="text-muted-foreground block text-[10px]">Net Bank Receipt (₹)</span>
-                      <Input
-                        type="number"
-                        value={paymentAmount}
-                        onChange={(e) => handleNetChange(Number(e.target.value) || 0)}
-                        className="h-7 text-xs font-mono font-bold text-emerald-600 bg-background"
+                        min="0"
+                        max="99"
+                        value={tdsRatePercent}
+                        onChange={(e) => {
+                          const rate = Math.max(0, Math.min(99, Number(e.target.value) || 0));
+                          setTdsRatePercent(rate);
+                          const tds = Math.round(grossDueInput * (rate / 100));
+                          setCustomTdsAmount(tds);
+                          setPaymentAmount(grossDueInput - tds);
+                        }}
+                        className="h-9 text-sm"
                       />
                     </div>
                   </div>
                 )}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Amount received in bank (₹)</label>
+                  <Input type="number" min="0" value={paymentAmount} onChange={(e) => handleNetChange(Number(e.target.value) || 0)} className="h-9 text-sm" />
+                </div>
+                {isTdsEnabled && <p className="text-xs text-muted-foreground">TDS credit: ₹{formatINR(effectiveTdsAmount, 2)} · Gross receipt: ₹{formatINR(effectiveGrossAmount, 2)}</p>}
               </div>
 
-              {/* Payment Mode & Type */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">Bank Collection Mode</label>
-                  <select
-                    value={paymentMode}
-                    onChange={(e) => setPaymentMode(e.target.value as any)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
-                  >
+              <div className="grid grid-cols-1 gap-3 border-t pt-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Collection mode</label>
+                  <select value={paymentMode} onChange={(e) => setPaymentMode(e.target.value as PaymentMethod)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
                     <option value="RTGS">RTGS</option>
                     <option value="NEFT">NEFT</option>
-                    <option value="NACH">NACH / e-Mandate</option>
-                    <option value="PDC">Post Dated Cheque (PDC)</option>
+                    <option value="NACH">NACH</option>
+                    <option value="PDC">PDC</option>
                     <option value="Cheque">Cheque</option>
                     <option value="UPI">UPI</option>
                     <option value="Cash">Cash</option>
                     <option value="Internal Transfer">Internal Transfer</option>
                   </select>
                 </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">Payment Type</label>
-                  <select
-                    value={paymentType}
-                    onChange={(e) => setPaymentType(e.target.value as any)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs font-medium"
-                  >
-                    <option value="regular_installment">Regular Interest / Installment</option>
-                    <option value="part_prepayment">Part-Prepayment (Principal)</option>
-                    <option value="cash_top_up">Cash Top-Up (Margin Call)</option>
-                    <option value="foreclosure">Full Foreclosure</option>
-                    <option value="penal_settlement">Penal Interest Settlement</option>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Payment type</label>
+                  <select value={paymentType} onChange={(e) => setPaymentType(e.target.value as PaymentType)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                    <option value="regular_installment">Regular installment</option>
+                    <option value="part_prepayment">Part prepayment</option>
+                    <option value="cash_top_up">Cash top up</option>
+                    <option value="foreclosure">Foreclosure</option>
+                    <option value="penal_settlement">Penal settlement</option>
                   </select>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">UTR / Cheque Number</label>
-                  <Input
-                    value={refNumber}
-                    onChange={(e) => setRefNumber(e.target.value)}
-                    placeholder="e.g. UTR12345678"
-                    className="h-8 text-xs font-mono"
-                  />
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">UTR / reference</label>
+                  <Input value={refNumber} onChange={(e) => setRefNumber(e.target.value)} placeholder="Optional" className="h-9 text-sm" />
                 </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-muted-foreground">Bank Name</label>
-                  <Input
-                    value={bankName}
-                    onChange={(e) => setBankName(e.target.value)}
-                    placeholder="e.g. HDFC Bank"
-                    className="h-8 text-xs"
-                  />
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Bank</label>
+                  <Input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="Optional" className="h-9 text-sm" />
+                </div>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <label className="text-xs font-medium">Notes</label>
+                  <Input value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} placeholder="Optional" className="h-9 text-sm" />
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <label className="font-semibold text-muted-foreground">Notes / Narration</label>
-                <Input
-                  value={paymentNotes}
-                  onChange={(e) => setPaymentNotes(e.target.value)}
-                  placeholder="e.g. Cleared via RTGS / TDS under Sec 194A"
-                  className="h-8 text-xs"
-                />
-              </div>
-
-              {/* Automatic Double-Entry Summary Callout */}
-              <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
-                  <span className="flex items-center gap-1.5">
-                    <Sparkles className="size-3.5 text-emerald-600" />
-                    Automatic Dues Reconciliation Preview
-                  </span>
-                  <span>Gross Credit: ₹{formatINR(effectiveGrossAmount)}</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2 text-[10px] text-center font-mono">
-                  <div className="bg-card p-1.5 rounded border">
-                    <span className="text-muted-foreground block font-sans text-[9px]">Bank Receipt (Cash)</span>
-                    <span className="font-bold text-emerald-600">₹{formatINR(paymentAmount)}</span>
-                  </div>
-                  <div className="bg-card p-1.5 rounded border">
-                    <span className="text-muted-foreground block font-sans text-[9px]">TDS Asset Credit</span>
-                    <span className="font-bold text-purple-600 dark:text-purple-400">
-                      {isTdsEnabled ? `₹${formatINR(effectiveTdsAmount)}` : "₹0"}
-                    </span>
-                  </div>
-                  <div className="bg-card p-1.5 rounded border">
-                    <span className="text-muted-foreground block font-sans text-[9px]">Balance Overdue</span>
-                    <span className="font-bold text-primary">₹0.00 (Cleared)</span>
-                  </div>
+              <div className="rounded-md border bg-muted/30 p-3 text-xs">
+                <div className="mb-2 font-medium">Receipt allocation</div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+                  <span>Accrued interest</span><span className="text-right font-medium text-foreground">₹{formatINR(liveAllocation.allocatedInterest, 2)}</span>
+                  <span>Principal</span><span className="text-right font-medium text-foreground">₹{formatINR(liveAllocation.allocatedPrincipal, 2)}</span>
+                  <span>Other dues</span><span className="text-right font-medium text-foreground">₹{formatINR(liveAllocation.allocatedPenal + liveAllocation.allocatedCharges, 2)}</span>
+                  <span>Accrued balance after receipt</span><span className="text-right font-medium text-foreground">₹{formatINR(Math.max(0, summary.accruedInterestOutstanding - liveAllocation.allocatedInterest), 2)}</span>
                 </div>
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsRecordPaymentOpen(false)}
-                className="h-8 text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleRecordPayment}
-                disabled={isPending}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs font-semibold gap-1"
-              >
-                {isPending ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
-                Confirm & Create Receipts
+            <div className="flex justify-end gap-2 border-t px-5 py-3">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsRecordPaymentOpen(false)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleRecordPayment} disabled={isPending}>
+                {isPending && <Loader2 className="mr-2 size-3.5 animate-spin" />}
+                Record collection
               </Button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ADD DAILY LEDGER TRANSACTIONS MODAL DIALOG (MULTI-ENTRY BATCH SUPPORT) */}
+      {/* ADD LEDGER TRANSACTION */}
       {isAddLedgerOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
-          <div className="bg-card border rounded-xl shadow-2xl max-w-5xl w-full max-h-[92vh] flex flex-col text-foreground animate-in fade-in zoom-in-95">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b px-6 py-4 bg-muted/30 rounded-t-xl shrink-0">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border bg-card shadow-xl">
+            <div className="flex items-start justify-between border-b px-5 py-4">
               <div>
-                <h3 className="text-sm font-bold flex items-center gap-2 text-indigo-600 dark:text-indigo-400">
-                  <PlusCircle className="size-4" />
-                  Add Daily Ledger Transactions (Batch Entry)
-                </h3>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Enter single or multiple ledger movements with independent <strong>Transaction (Booking) Date</strong> and <strong>Value Date</strong>.
-                </p>
+                <h3 className="text-base font-semibold">Add ledger transaction</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">For ledger adjustments. Record borrower payments through Record Collection.</p>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  type="button"
-                  onClick={addAnotherLedgerRow}
-                  className="bg-indigo-600/15 hover:bg-indigo-600/25 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 h-8 text-xs font-semibold gap-1"
-                >
-                  <Plus className="size-3.5" />
-                  Add Another Row
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => setIsAddLedgerOpen(false)}
-                  className="text-muted-foreground hover:text-foreground text-sm px-2 py-1 rounded hover:bg-muted/80 transition-colors"
-                >
-                  ✕
-                </button>
-              </div>
+              <button type="button" onClick={() => setIsAddLedgerOpen(false)} aria-label="Close" className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground">✕</button>
             </div>
 
-            {/* Smart Accrual & Dues Guide Banner */}
-            <div className="mx-6 mt-4 p-3 rounded-lg bg-gradient-to-r from-indigo-950/40 via-indigo-900/30 to-purple-950/40 border border-indigo-500/30 text-xs space-y-2 shrink-0">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 font-bold text-indigo-200">
-                  <Sparkles className="size-4 text-indigo-400 shrink-0" />
-                  <span>Segregated Accrual & Collection Dues Guide:</span>
-                </div>
-                <span className="text-[11px] text-muted-foreground font-mono">
-                  Active Principal: <strong className="text-foreground">₹{formatINR(activeCumulativePrincipal, 2)}</strong> @ {summary.config.roiPercent}% (₹{formatINR(dailyInterestAccrualRate, 2)}/day)
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
-                {brokenPeriodDays > 0 && brokenPeriodInterest > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (ledgerRows.length > 0) {
-                        const first = ledgerRows[0];
-                        updateLedgerRow(first.id, {
-                          txnType: "Broken Interest",
-                          narration: `Broken Period Interest (${brokenPeriodDays} Days)`,
-                          debit: brokenPeriodInterest,
-                          credit: 0,
-                        });
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-2.5 py-1 rounded-md border border-amber-400/40 transition-colors font-mono font-semibold"
-                  >
-                    <span>⚡ Broken Period ({brokenPeriodDays}d):</span>
-                    <strong className="text-white">₹{formatINR(brokenPeriodInterest, 2)}</strong>
-                    <span className="text-[9px] bg-amber-500/40 px-1 py-0.5 rounded ml-1">Use</span>
-                  </button>
-                )}
-                {latestSegmentAccruedInterest > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (ledgerRows.length > 0) {
-                        const first = ledgerRows[0];
-                        if (first.txnType === "Interest" && first.debit > 0) {
-                          updateLedgerRow(first.id, { debit: latestSegmentAccruedInterest });
-                        } else {
-                          updateLedgerRow(first.id, { credit: latestSegmentAccruedInterest });
-                        }
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 px-2.5 py-1 rounded-md border border-indigo-400/40 transition-colors font-mono font-semibold"
-                  >
-                    <span>🕒 Active Segment ({latestLedgerEntry?.days || 0}d):</span>
-                    <strong className="text-white">₹{formatINR(latestSegmentAccruedInterest, 2)}</strong>
-                    <span className="text-[9px] bg-indigo-500/30 px-1 py-0.5 rounded ml-1">Use</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (ledgerRows.length > 0) {
-                      const first = ledgerRows[0];
-                      if (first.txnType === "Interest" && first.debit > 0) {
-                        updateLedgerRow(first.id, { debit: fullMonth31dInterest });
-                      } else {
-                        updateLedgerRow(first.id, { credit: fullMonth31dInterest });
-                      }
-                    }
-                  }}
-                  className="inline-flex items-center gap-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 px-2.5 py-1 rounded-md border border-purple-400/40 transition-colors font-mono font-semibold"
-                >
-                  <span>📅 Full Month (31d):</span>
-                  <strong className="text-white">₹{formatINR(fullMonth31dInterest, 2)}</strong>
-                  <span className="text-[9px] bg-purple-500/30 px-1 py-0.5 rounded ml-1">Use</span>
-                </button>
-                {overdueUnpaidInterestInLedger > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (ledgerRows.length > 0) {
-                        updateLedgerRow(ledgerRows[0].id, { credit: overdueUnpaidInterestInLedger });
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 px-2.5 py-1 rounded-md border border-rose-400/40 transition-colors font-mono font-semibold"
-                  >
-                    <span>⚠️ Unpaid Overdue Dues:</span>
-                    <strong className="text-white">₹{formatINR(overdueUnpaidInterestInLedger, 2)}</strong>
-                    <span className="text-[9px] bg-rose-500/30 px-1 py-0.5 rounded ml-1">Use</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Modal Scrollable Rows Body */}
-            <div className="p-6 overflow-y-auto space-y-4 flex-1">
-              {ledgerRows.map((row, idx) => {
-                const isCollectionOrInterest = row.txnType === "Collection" || row.txnType === "Interest" || row.txnType === "Broken Interest" || row.txnType === "Principal";
-                const rowTdsAmount = row.autoSplitTds && row.credit > 0 ? Math.round(row.credit * (row.tdsRatePercent / 100)) : 0;
-                const rowNetAmount = row.autoSplitTds && row.credit > 0 ? row.credit - rowTdsAmount : row.credit;
-
+            <div className="space-y-3 overflow-y-auto px-5 py-4">
+              {actionMessage?.isError && <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionMessage.text}</p>}
+              {ledgerRows.map((row, index) => {
+                const isInterestReceipt = ["Interest", "Broken Interest", "Broken Period", "Tds"].includes(row.txnType) && row.credit > 0;
+                const canSplitTds = ["Interest", "Broken Interest", "Broken Period"].includes(row.txnType) && row.credit > 0;
+                const rowTdsAmount = row.autoSplitTds ? Math.round(row.credit * (row.tdsRatePercent / 100)) : 0;
                 return (
-                  <div
-                    key={row.id}
-                    className="p-4 rounded-xl border bg-card/60 hover:border-indigo-500/40 transition-all space-y-3 shadow-xs"
-                  >
-                    {/* Row Top Header */}
-                    <div className="flex items-center justify-between border-b pb-2.5">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded">
-                          #{idx + 1}
-                        </span>
-                        <span className="text-xs font-semibold text-foreground">
-                          {row.narration || row.txnType}
-                        </span>
-                        {renderTxnTypeBadge(row.txnType)}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => duplicateLedgerRow(row.id)}
-                          title="Duplicate Entry"
-                          className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-muted transition-colors text-xs flex items-center gap-1"
-                        >
-                          <Copy className="size-3.5" />
-                          <span className="text-[10px] hidden sm:inline">Duplicate</span>
-                        </button>
-                        {ledgerRows.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => removeLedgerRow(row.id)}
-                            title="Delete Entry"
-                            className="text-muted-foreground hover:text-destructive p-1 rounded hover:bg-destructive/10 transition-colors"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        )}
+                  <div key={row.id} className="rounded-lg border p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-xs font-semibold">Entry {index + 1}</span>
+                      <div className="flex items-center gap-1">
+                        <button type="button" onClick={() => duplicateLedgerRow(row.id)} title="Duplicate entry" aria-label="Duplicate entry" className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"><Copy className="size-3.5" /></button>
+                        {ledgerRows.length > 1 && <button type="button" onClick={() => removeLedgerRow(row.id)} title="Remove entry" aria-label="Remove entry" className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"><Trash2 className="size-3.5" /></button>}
                       </div>
                     </div>
-
-                    {/* Row Form Grid */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                      {/* 1. Txn Type */}
-                      <div className="space-y-1">
-                        <label className="font-semibold text-muted-foreground text-[11px]">Txn Type</label>
-                        <select
-                          value={row.txnType}
-                          onChange={(e) => updateLedgerRow(row.id, { txnType: e.target.value as LedgerTxnType })}
-                          className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-medium"
-                        >
-                          <option value="Collection">Collection (Credit)</option>
-                          <option value="Disbursement">Disbursement (Debit)</option>
-                          <option value="Broken Interest">⚡ Broken Period Interest</option>
-                          <option value="Interest">📅 Monthly Interest (Debit / Payment)</option>
-                          <option value="Tds">Tds (TDS Asset Credit)</option>
-                          <option value="Penal">Penal Interest</option>
-                          <option value="Charges">Charges / Fees</option>
-                          <option value="Other">Other</option>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Transaction type</label>
+                        <select value={row.txnType} onChange={(e) => updateLedgerRow(row.id, { txnType: e.target.value as LedgerTxnType })} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                          <option value="Other">Other adjustment</option>
+                          <option value="Disbursement">Disbursement</option>
+                          <option value="Collection">Principal collection</option>
+                          <option value="Interest">Interest debit / receipt</option>
+                          <option value="Broken Interest">Broken period interest</option>
+                          <option value="Tds">TDS credit</option>
+                          <option value="Penal">Penal interest</option>
+                          <option value="Charges">Charges</option>
                         </select>
                       </div>
-
-                      {/* 2. Transaction Date (Booking Date) */}
-                      <div className="space-y-1">
-                        <label className="font-semibold text-muted-foreground text-[11px]">
-                          Txn Date <span className="text-[10px] font-normal">(Booking)</span>
-                        </label>
-                        <Input
-                          type="date"
-                          value={row.txnDate}
-                          onChange={(e) => updateLedgerRow(row.id, { txnDate: e.target.value })}
-                          className="h-8 text-xs font-mono"
-                        />
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Transaction date</label>
+                        <Input type="date" value={row.txnDate} onChange={(e) => updateLedgerRow(row.id, { txnDate: e.target.value })} className="h-9 text-sm" />
                       </div>
-
-                      {/* 3. Value Date (Effective Interest Date) */}
-                      <div className="space-y-1">
-                        <label className="font-semibold text-indigo-600 dark:text-indigo-400 text-[11px]">
-                          Value Date <span className="text-[10px] font-normal">(Effective)</span>
-                        </label>
-                        <Input
-                          type="date"
-                          value={row.valueDate}
-                          onChange={(e) => updateLedgerRow(row.id, { valueDate: e.target.value })}
-                          className="h-8 text-xs font-mono font-semibold border-indigo-400/50 bg-indigo-50/20 dark:bg-indigo-950/20"
-                        />
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Value date</label>
+                        <Input type="date" value={row.valueDate} onChange={(e) => updateLedgerRow(row.id, { valueDate: e.target.value })} className="h-9 text-sm" />
                       </div>
-
-                      {/* 4. Narration */}
-                      <div className="space-y-1">
-                        <label className="font-semibold text-muted-foreground text-[11px]">Narration / Description</label>
-                        <Input
-                          value={row.narration}
-                          onChange={(e) => updateLedgerRow(row.id, { narration: e.target.value })}
-                          placeholder="e.g. Collection, RTGS"
-                          className="h-8 text-xs"
-                        />
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Narration</label>
+                        <Input value={row.narration} onChange={(e) => updateLedgerRow(row.id, { narration: e.target.value })} className="h-9 text-sm" />
                       </div>
-
-                      {/* 5. Debit Amount */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <label className="font-semibold text-muted-foreground text-[11px]">Debit (₹)</label>
-                          <div className="flex items-center gap-1">
-                            {brokenPeriodDays > 0 && brokenPeriodInterest > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => updateLedgerRow(row.id, { debit: brokenPeriodInterest })}
-                                className="text-[9px] text-amber-700 dark:text-amber-300 bg-amber-500/15 hover:bg-amber-500/25 px-1 rounded border border-amber-500/30 transition-colors font-mono"
-                                title="Fill with broken period interest"
-                              >
-                                Broken: ₹{formatINR(brokenPeriodInterest)}
-                              </button>
-                            )}
-                            {latestSegmentAccruedInterest > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => updateLedgerRow(row.id, { debit: latestSegmentAccruedInterest })}
-                                className="text-[9px] text-indigo-700 dark:text-indigo-300 bg-indigo-500/15 hover:bg-indigo-500/25 px-1 rounded border border-indigo-500/30 transition-colors font-mono"
-                                title="Fill with segment accrued interest"
-                              >
-                                Accrued: ₹{formatINR(latestSegmentAccruedInterest)}
-                              </button>
-                            )}
-                          </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Debit (₹)</label>
+                        <Input type="number" min="0" value={row.debit || ""} onChange={(e) => updateLedgerRow(row.id, { debit: Number(e.target.value) || 0 })} placeholder="0" className="h-9 text-sm" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Credit (₹)</label>
+                        <Input type="number" min="0" value={row.credit || ""} onChange={(e) => updateLedgerRow(row.id, { credit: Number(e.target.value) || 0 })} placeholder="0" className="h-9 text-sm" />
+                      </div>
+                      {isInterestReceipt && (
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-medium">Interest due date (7th)</label>
+                          <Input type="date" value={row.targetDueDate} onChange={(e) => updateLedgerRow(row.id, { targetDueDate: normalizeDueDateToSeventh(e.target.value) })} className="h-9 text-sm" />
                         </div>
-                        <Input
-                          type="number"
-                          value={row.debit || ""}
-                          onChange={(e) => updateLedgerRow(row.id, { debit: Number(e.target.value) || 0 })}
-                          placeholder="0.00"
-                          className="h-8 text-xs font-mono font-bold"
-                        />
+                      )}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">UTR / reference</label>
+                        <Input value={row.referenceNumber} onChange={(e) => updateLedgerRow(row.id, { referenceNumber: e.target.value })} placeholder="Optional" className="h-9 text-sm" />
                       </div>
-
-                      {/* 6. Credit Amount */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <label className="font-semibold text-muted-foreground text-[11px]">Credit (₹)</label>
-                          <div className="flex items-center gap-1">
-                            {latestSegmentAccruedInterest > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => updateLedgerRow(row.id, { credit: latestSegmentAccruedInterest })}
-                                className="text-[9px] text-indigo-700 dark:text-indigo-300 bg-indigo-500/15 hover:bg-indigo-500/25 px-1 rounded border border-indigo-500/30 transition-colors font-mono"
-                                title="Fill with segment accrued interest"
-                              >
-                                Accrued: ₹{formatINR(latestSegmentAccruedInterest)}
-                              </button>
-                            )}
-                            {suggestedDueAmount > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => updateLedgerRow(row.id, { credit: suggestedDueAmount })}
-                                className="text-[9px] text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 px-1 rounded border border-emerald-500/30 transition-colors font-mono font-semibold"
-                                title="Fill with suggested collection amount"
-                              >
-                                Due: ₹{formatINR(suggestedDueAmount)}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        <Input
-                          type="number"
-                          value={row.credit || ""}
-                          onChange={(e) => updateLedgerRow(row.id, { credit: Number(e.target.value) || 0 })}
-                          placeholder="0.00"
-                          className="h-8 text-xs font-mono font-bold text-emerald-600"
-                        />
-                      </div>
-
-                      {/* 7. Reference / UTR */}
-                      <div className="space-y-1">
-                        <label className="font-semibold text-muted-foreground text-[11px]">UTR / Ref #</label>
-                        <Input
-                          value={row.referenceNumber}
-                          onChange={(e) => updateLedgerRow(row.id, { referenceNumber: e.target.value })}
-                          placeholder="e.g. UTR12345678"
-                          className="h-8 text-xs font-mono"
-                        />
-                      </div>
-
-                      {/* 8. Bank Name */}
-                      <div className="space-y-1">
-                        <label className="font-semibold text-muted-foreground text-[11px]">Bank Name</label>
-                        <Input
-                          value={row.bankName}
-                          onChange={(e) => updateLedgerRow(row.id, { bankName: e.target.value })}
-                          placeholder="e.g. HDFC Bank"
-                          className="h-8 text-xs"
-                        />
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium">Bank</label>
+                        <Input value={row.bankName} onChange={(e) => updateLedgerRow(row.id, { bankName: e.target.value })} placeholder="Optional" className="h-9 text-sm" />
                       </div>
                     </div>
-
-                    {/* TDS Auto-Split Checkbox for Collections / Interest */}
-                    {isCollectionOrInterest && row.credit > 0 && (
-                      <div className="p-2.5 rounded bg-purple-50/80 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 space-y-1.5 text-xs">
-                        <label className="flex items-center gap-2 cursor-pointer text-[11px] font-semibold text-purple-950 dark:text-purple-200">
-                          <input
-                            type="checkbox"
-                            checked={row.autoSplitTds}
-                            onChange={(e) => updateLedgerRow(row.id, { autoSplitTds: e.target.checked })}
-                            className="rounded border-purple-300 text-purple-600"
-                          />
-                          <span>Auto-split 10% TDS Asset credit entry (Gross ₹{formatINR(row.credit)})</span>
+                    {canSplitTds && (
+                      <div className="mt-3 flex flex-wrap items-center gap-3 border-t pt-3 text-xs">
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" checked={row.autoSplitTds} onChange={(e) => updateLedgerRow(row.id, { autoSplitTds: e.target.checked })} />
+                          Split TDS from interest receipt
                         </label>
                         {row.autoSplitTds && (
-                          <div className="grid grid-cols-2 gap-2 text-[10px] pt-1 font-mono">
-                            <div className="bg-card/70 p-1.5 rounded border border-purple-200 dark:border-purple-800">
-                              <span className="text-muted-foreground block font-sans">TDS Assets Credit (10%):</span>
-                              <span className="font-bold text-purple-600">₹{formatINR(rowTdsAmount, 2)}</span>
-                            </div>
-                            <div className="bg-card/70 p-1.5 rounded border border-emerald-200 dark:border-emerald-800">
-                              <span className="text-muted-foreground block font-sans">Net Cash Received (90%):</span>
-                              <span className="font-bold text-emerald-600">₹{formatINR(rowNetAmount, 2)}</span>
-                            </div>
-                          </div>
+                          <>
+                            <Input type="number" min="0" max="100" value={row.tdsRatePercent} onChange={(e) => updateLedgerRow(row.id, { tdsRatePercent: Number(e.target.value) || 0 })} className="h-8 w-20 text-xs" />
+                            <span className="text-muted-foreground">TDS ₹{formatINR(rowTdsAmount, 2)} · Bank ₹{formatINR(row.credit - rowTdsAmount, 2)}</span>
+                          </>
                         )}
                       </div>
                     )}
                   </div>
                 );
               })}
+              <Button type="button" variant="outline" size="sm" onClick={addAnotherLedgerRow} className="w-full border-dashed"><Plus className="mr-2 size-3.5" />Add another entry</Button>
+            </div>
 
-              {/* Add row trigger button at bottom of list */}
-              <div className="flex justify-center pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={addAnotherLedgerRow}
-                  className="border-dashed border-2 hover:border-indigo-500 hover:text-indigo-600 text-xs gap-1.5 h-9 w-full sm:w-auto px-6 font-semibold"
-                >
-                  <Plus className="size-4" />
-                  + Add Another Ledger Entry Row
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3">
+              <p className="text-xs text-muted-foreground">
+                {ledgerRows.length} {ledgerRows.length === 1 ? "entry" : "entries"} · Debit ₹{formatINR(ledgerRows.reduce((sum, row) => sum + (Number(row.debit) || 0), 0), 2)} · Credit ₹{formatINR(ledgerRows.reduce((sum, row) => sum + (Number(row.credit) || 0), 0), 2)}
+              </p>
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setIsAddLedgerOpen(false)}>Cancel</Button>
+                <Button type="button" size="sm" onClick={handleAddLedgerTxns} disabled={isPending}>
+                  {isPending && <Loader2 className="mr-2 size-3.5 animate-spin" />}
+                  Save {ledgerRows.length === 1 ? "entry" : "entries"}
                 </Button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* Modal Bottom Footer with Batch Stats & Actions */}
-            <div className="border-t p-4 px-6 bg-muted/40 rounded-b-xl flex flex-col sm:flex-row items-center justify-between gap-4 shrink-0">
-              {/* Batch Aggregates Summary */}
-              <div className="flex items-center gap-3 text-xs flex-wrap">
-                <span className="font-semibold text-muted-foreground">
-                  Total Entries: <strong className="text-foreground">{ledgerRows.length}</strong>
-                </span>
-                <span className="text-muted-foreground">•</span>
-                <span className="font-semibold text-muted-foreground">
-                  Debits: <strong className="text-foreground">₹{formatINR(ledgerRows.reduce((a, b) => a + (Number(b.debit) || 0), 0), 2)}</strong>
-                </span>
-                <span className="text-muted-foreground">•</span>
-                <span className="font-semibold text-muted-foreground">
-                  Credits: <strong className="text-emerald-600">₹{formatINR(ledgerRows.reduce((a, b) => a + (Number(b.credit) || 0), 0), 2)}</strong>
-                </span>
+      {/* EDIT ACCRUED INTEREST RECEIPT */}
+      {editingAccruedReceipt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b px-5 py-4">
+              <h3 className="text-base font-semibold">Edit accrued receipt</h3>
+              <button type="button" onClick={() => setEditingAccruedReceipt(null)} aria-label="Close" className="rounded p-1 text-muted-foreground hover:bg-muted">✕</button>
+            </div>
+            <div className="space-y-4 px-5 py-4 text-sm">
+              {actionMessage?.isError && <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionMessage.text}</p>}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><label className="text-xs font-medium">Payment date</label><Input type="date" value={receiptEditDate} onChange={(e) => setReceiptEditDate(e.target.value)} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><label className="text-xs font-medium">Due date (7th)</label><Input type="date" value={receiptEditDueDate} onChange={(e) => setReceiptEditDueDate(normalizeDueDateToSeventh(e.target.value))} className="h-9 text-sm" /></div>
               </div>
-
-              {/* Buttons */}
-              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsAddLedgerOpen(false)}
-                  className="h-8 text-xs"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  type="button"
-                  onClick={handleAddLedgerTxns}
-                  disabled={isPending}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white h-8 text-xs font-semibold gap-1.5 shadow-sm"
-                >
-                  {isPending ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-                  Save {ledgerRows.length > 1 ? `All (${ledgerRows.length}) Entries` : "Entry"} & Recalculate
-                </Button>
-              </div>
+              <div className="space-y-1.5"><label className="text-xs font-medium">Receipt amount (₹)</label><Input type="number" min="0.01" step="0.01" value={receiptEditAmount} onChange={(e) => setReceiptEditAmount(Number(e.target.value) || 0)} disabled={summary.transactions.some((item) => item.id === editingAccruedReceipt.repaymentId && item.allocatedPrincipal + item.allocatedPenal + item.allocatedCharges > 0)} className="h-9 text-sm" /></div>
+              <div className="space-y-1.5"><label className="text-xs font-medium">UTR / reference</label><Input value={receiptEditReference} onChange={(e) => setReceiptEditReference(e.target.value)} placeholder="Optional" className="h-9 text-sm" /></div>
+              {editingAccruedReceipt.repaymentId && (() => {
+                const tx = summary.transactions.find((item) => item.id === editingAccruedReceipt.repaymentId);
+                return tx && (tx.allocatedPrincipal > 0 || tx.allocatedPenal > 0 || tx.allocatedCharges > 0)
+                  ? <p className="text-xs text-muted-foreground">This receipt also settles other dues. Its amount cannot be changed here.</p>
+                  : null;
+              })()}
+            </div>
+            <div className="flex justify-end gap-2 border-t px-5 py-3">
+              <Button type="button" variant="outline" size="sm" onClick={() => setEditingAccruedReceipt(null)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleUpdateAccruedReceipt} disabled={isPending}>{isPending && <Loader2 className="mr-2 size-3.5 animate-spin" />}Save receipt</Button>
             </div>
           </div>
         </div>
