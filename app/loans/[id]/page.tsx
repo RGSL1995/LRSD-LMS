@@ -22,6 +22,8 @@ import { LASSecuritiesTable } from "@/app/loans/new/las-securities-table";
 import { type LASSecurityItem, type SecurityProviderOption } from "@/app/loans/las-types";
 import { SharePortalDialog } from "./share-portal-dialog";
 import { BorrowerDocumentsCard, type BorrowerDocumentItem } from "./borrower-documents-card";
+import { getLoanWorkflow } from "./workflow/workflow-data";
+import { WorkflowTracker } from "./workflow/workflow-tracker";
 
 type EmbeddedBorrower = {
   id: string;
@@ -172,6 +174,8 @@ export default async function LoanApplicationDetailPage({
   }
 
   if (!application) notFound();
+
+  const workflow = await getLoanWorkflow(id);
 
   // 2. Safely Fetch Parties (Co-borrowers, Guarantors, Security Providers)
   let parties: Array<{
@@ -474,6 +478,7 @@ export default async function LoanApplicationDetailPage({
       </header>
 
       <main className="mx-auto max-w-5xl space-y-6 p-6">
+        <WorkflowTracker applicationId={id} workflow={workflow} />
         {/* Loan Facility Terms Card */}
         <Card className="shadow-xs border-border/80">
           <CardHeader className="pb-3 border-b">
